@@ -44,7 +44,9 @@ model endpoint or storing anything that could be PHI.
 
 - `src/medilens/config.py`: environment-derived settings.
 - `src/medilens/cli.py`: command-line entrypoint.
-- `src/medilens/client/`: Anthropic API client wrapper (rate limiting, retries). Not yet built.
+- `src/medilens/client/`: Anthropic API client wrapper: token-bucket rate limiting
+  (requests/min and tokens/min), retries with exponential backoff and jitter on 429/529,
+  retry-after support, pre-send token counting, and schema-enforced structured JSON output.
 - `src/medilens/knowledge/`: ICD-10-CM, HCPCS Level II, NCCI edit retrieval. Not yet built.
 - `src/medilens/policy/`: payer policy retrieval. Not yet built.
 - `src/medilens/reasoning/`: fact extraction, code matching, gap analysis. Not yet built.

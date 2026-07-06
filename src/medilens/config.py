@@ -19,11 +19,20 @@ load_dotenv()
 DEFAULT_MODEL_NAME = "claude-sonnet-5"
 
 
+# Conservative defaults sized for a low API tier. Actual per-tier limits change,
+# so read the current numbers from https://docs.claude.com/en/api/rate-limits and
+# override via environment variables rather than editing these constants.
+DEFAULT_MAX_REQUESTS_PER_MINUTE = 50
+DEFAULT_MAX_TOKENS_PER_MINUTE = 30000
+
+
 @dataclass
 class Settings:
     anthropic_api_key: str
     model_name: str
     database_url: str
+    max_requests_per_minute: int
+    max_tokens_per_minute: int
 
 
 def load_settings() -> Settings:
@@ -49,9 +58,38 @@ def load_settings() -> Settings:
     if not model_name:
         model_name = DEFAULT_MODEL_NAME
 
+    max_requests_per_minute = _read_positive_int(
+        "MEDILENS_MAX_REQUESTS_PER_MINUTE", DEFAULT_MAX_REQUESTS_PER_MINUTE
+    )
+    max_tokens_per_minute = _read_positive_int(
+        "MEDILENS_MAX_TOKENS_PER_MINUTE", DEFAULT_MAX_TOKENS_PER_MINUTE
+    )
+
     settings = Settings(
         anthropic_api_key=anthropic_api_key,
         model_name=model_name,
         database_url=database_url,
+        max_requests_per_minute=max_requests_per_minute,
+        max_tokens_per_minute=max_tokens_per_minute,
     )
     return settings
+
+
+def _read_positive_int(env_var_name: str, default_value: int) -> int:
+    """Parse a positive integer setting, failing loudly on garbage values.
+
+    A silently ignored typo in a rate limit could let the client exceed the
+    account tier, so malformed values are an error rather than a fallback.
+    """
+    raw_value = os.environ.get(env_var_name)
+    if raw_value is None or raw_value == "":
+        return default_value
+    try:
+        parsed_value = int(raw_value)
+    except ValueError as exc:
+        raise RuntimeError(
+            f"{env_var_name} must be an integer, got: {raw_value!r}"
+        ) from exc
+    if parsed_value <= 0:
+        raise RuntimeError(f"{env_var_name} must be positive, got: {parsed_value}")
+    return parsed_value
