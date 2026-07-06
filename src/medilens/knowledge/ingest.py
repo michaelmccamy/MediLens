@@ -14,7 +14,6 @@ records feed a future full-CMS-file path unchanged.
 """
 
 import datetime
-import hashlib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -24,6 +23,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from medilens.db.models import CodeSetEntry
+from medilens.hashing import hash_content
 
 
 @dataclass(frozen=True)
@@ -55,8 +55,6 @@ def compute_content_hash(entry: ParsedCodeEntry) -> str:
     if entry.effective_end is not None:
         effective_end_text = entry.effective_end.isoformat()
 
-    # A field separator that cannot appear in the values keeps the hash
-    # unambiguous, so two different field splits cannot produce the same string.
     parts = [
         entry.code_system,
         entry.code,
@@ -64,9 +62,7 @@ def compute_content_hash(entry: ParsedCodeEntry) -> str:
         entry.effective_start.isoformat(),
         effective_end_text,
     ]
-    canonical = "\x1f".join(parts)
-    digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
-    return digest
+    return hash_content(parts)
 
 
 def _require_key(mapping: dict[str, Any], key: str, context: str) -> Any:

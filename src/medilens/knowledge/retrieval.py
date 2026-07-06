@@ -16,22 +16,18 @@ import datetime
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from medilens.date_resolution import effective_date_window
 from medilens.db.models import CodeSetEntry
 
 
 def _in_force_condition(code_system: str, date_of_service: datetime.date):
     """Build the SQLAlchemy filter for codes in force on the date of service.
 
-    Kept as one helper so the single-code and list queries cannot drift in how
-    they define validity.
+    Combines the code system with the shared effective-date window so the
+    single-code and list queries cannot drift in how they define validity.
     """
-    return (
-        (CodeSetEntry.code_system == code_system)
-        & (CodeSetEntry.effective_start <= date_of_service)
-        & (
-            (CodeSetEntry.effective_end.is_(None))
-            | (CodeSetEntry.effective_end >= date_of_service)
-        )
+    return (CodeSetEntry.code_system == code_system) & effective_date_window(
+        CodeSetEntry, date_of_service
     )
 
 

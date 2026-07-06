@@ -1,0 +1,51 @@
+# Curated payer medical-necessity policies for the ortho/pain beachhead.
+#
+# CLAUDE.md section 4 calls the payer policy layer the highest-value and
+# hardest layer, to be started narrow and manual. This seed covers a small
+# set of beachhead services (lumbar MRI, lumbar epidural steroid injection)
+# for two payers.
+#
+# IMPORTANT: the criteria below are SYNTHETIC, illustrative summaries written
+# for development against synthetic notes. They are NOT verbatim payer policy
+# text and must not be treated as authoritative coverage criteria. Real
+# policies (with their exact clause text, effective dates, and citations) get
+# curated per design partner before any production use. Commercial payer
+# policy text is proprietary and is not embedded here; the commercial entry is
+# a generic placeholder. Medicare criteria reference publicly available
+# coverage concepts (LCD/NCD style) but are still paraphrased, not quoted.
+#
+# Each criterion is phrased as a DOCUMENTATION requirement, so the reasoning
+# layer can check the note for sufficiency and cite the specific clause
+# (CLAUDE.md guardrail 4). Criteria never assert clinical facts; they state
+# what the record must show if clinically accurate (guardrail 1).
+#
+# No em dashes anywhere (CLAUDE.md formatting rule).
+
+specialty: "Orthopedics and pain medicine"
+
+policies:
+  - payer_name: Medicare
+    policy_identifier: SYN-LUMBAR-MRI-001
+    effective_start: 2025-01-01
+    effective_end: null
+    service: "Lumbar MRI (advanced imaging of the lumbar spine)"
+    source: "SYNTHETIC illustrative policy for development. Paraphrases public LCD/NCD coverage concepts; not authoritative."
+    criteria:
+      - "Documentation supports low back or radicular symptoms with a duration of at least 6 weeks, unless a red-flag indication below is present."
+      - "Documentation shows a completed trial of conservative therapy (for example physical therapy and pharmacologic management), unless a red-flag indication below is present."
+      - "Documentation records objective neurologic findings on examination (for example a positive straight-leg-raise, dermatomal sensory loss, motor weakness, or reflex change) supporting radiculopathy, or explains their absence."
+      - "A red-flag indication (suspected malignancy, infection, fracture, or cauda equina syndrome) is documented and, if present, overrides the duration and conservative-therapy requirements above."
+      - "The requested study has not been performed recently for the same indication without an interval change in clinical status."
+
+  - payer_name: National Commercial Payer A
+    policy_identifier: SYN-LUMBAR-ESI-001
+    effective_start: 2025-01-01
+    effective_end: null
+    service: "Lumbar epidural steroid injection"
+    source: "SYNTHETIC placeholder policy for development. Not based on any specific commercial payer's proprietary policy text."
+    criteria:
+      - "Documentation supports radicular pain (radiculopathy or sciatica) correlating with an imaging or examination finding at the treated level."
+      - "Documentation shows a trial of conservative therapy of at least 4 weeks (for example physical therapy and pharmacologic management) without adequate relief."
+      - "Documentation records the current pain level and functional impairment used as the baseline for measuring response."
+      - "For a repeat injection, documentation records a meaningful and sustained response to the prior injection, including the degree and duration of relief."
+      - "No documented contraindication to the injection (for example active infection or uncorrected coagulopathy) is present."

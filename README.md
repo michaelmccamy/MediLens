@@ -50,9 +50,14 @@ model endpoint or storing anything that could be PHI.
 - `src/medilens/knowledge/`: code-set ingestion and date-resolved retrieval. Ships a curated
   ortho/pain ICD-10-CM seed (`seed/`), an ingester that hashes and idempotently loads it, and
   retrieval that resolves codes against the date of service. HCPCS Level II and NCCI edits later.
-- `src/medilens/policy/`: payer policy retrieval. Not yet built.
+- `src/medilens/policy/`: payer medical-necessity policy ingestion and date-resolved retrieval.
+  Ships a curated, synthetic ortho/pain policy seed (`seed/`) with numbered, citable criteria,
+  an idempotent versioned ingester, and retrieval scoped by payer and specialty at the date of
+  service. The seed criteria are synthetic development data, not authoritative payer text.
 - `src/medilens/reasoning/`: fact extraction, code matching, gap analysis. Not yet built.
 - `src/medilens/audit/`: append-only audit record writing. Not yet built.
 - `src/medilens/db/`: SQLAlchemy models and session setup for non-PHI operational data.
 - `src/medilens/prompts/`: versioned prompt templates.
+- `src/medilens/hashing.py`: shared content-hash primitive for change detection across ingesters.
+- `src/medilens/date_resolution.py`: shared "in force on the date of service" query filter.
 - `tests/fixtures/synthetic_notes/`: synthetic note fixtures for tests. Never real PHI.
