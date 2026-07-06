@@ -1,0 +1,25 @@
+SYNTHETIC NOTE. Not a real patient. For testing only.
+
+Patient: Jane Testcase (synthetic), DOB 1975-01-01 (synthetic)
+Date of visit: 2026-06-01
+
+Chief complaint: Low back pain radiating to left leg, 8 weeks duration.
+
+History of present illness: Patient reports gradual onset low back pain
+with radiation into the left posterior thigh and calf. Pain is worse with
+prolonged sitting and improves partially with rest. Denies saddle
+anesthesia, bowel or bladder dysfunction, or fever.
+
+Conservative treatment to date: Completed 6 weeks of physical therapy with
+minimal improvement. Trial of NSAIDs (naproxen) with partial relief. No
+prior epidural steroid injection.
+
+Physical exam: Positive straight leg raise on the left at 40 degrees.
+Diminished sensation in the left L5 dermatome. Reflexes symmetric.
+Strength 4/5 left extensor hallucis longus.
+
+Assessment: Lumbar radiculopathy, left L5 distribution, persistent despite
+6 weeks of conservative therapy.
+
+Plan: Requesting lumbar MRI without contrast to evaluate for disc
+herniation or nerve root compression given failed conservative therapy.

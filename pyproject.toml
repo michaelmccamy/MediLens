@@ -1,0 +1,29 @@
+[project]
+name = "medilens"
+version = "0.1.0"
+description = "Payer-aware clinical coding and documentation validation tool (pre-claim denial prevention)."
+readme = "README.md"
+authors = [
+    { name = "michaelmccamy", email = "michael.mccamy@ufl.edu" }
+]
+requires-python = ">=3.11"
+dependencies = [
+    "anthropic>=0.40.0",
+    "sqlalchemy>=2.0",
+    "psycopg[binary]>=3.2",
+    "pydantic>=2.7",
+    "python-dotenv>=1.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.6",
+]
+
+[project.scripts]
+medilens = "medilens.cli:main"
+
+[build-system]
+requires = ["uv_build>=0.11.26,<0.12.0"]
+build-backend = "uv_build"
