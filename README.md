@@ -47,7 +47,9 @@ model endpoint or storing anything that could be PHI.
 - `src/medilens/client/`: Anthropic API client wrapper: token-bucket rate limiting
   (requests/min and tokens/min), retries with exponential backoff and jitter on 429/529,
   retry-after support, pre-send token counting, and schema-enforced structured JSON output.
-- `src/medilens/knowledge/`: ICD-10-CM, HCPCS Level II, NCCI edit retrieval. Not yet built.
+- `src/medilens/knowledge/`: code-set ingestion and date-resolved retrieval. Ships a curated
+  ortho/pain ICD-10-CM seed (`seed/`), an ingester that hashes and idempotently loads it, and
+  retrieval that resolves codes against the date of service. HCPCS Level II and NCCI edits later.
 - `src/medilens/policy/`: payer policy retrieval. Not yet built.
 - `src/medilens/reasoning/`: fact extraction, code matching, gap analysis. Not yet built.
 - `src/medilens/audit/`: append-only audit record writing. Not yet built.

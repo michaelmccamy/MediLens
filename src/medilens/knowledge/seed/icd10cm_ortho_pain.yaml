@@ -1,0 +1,85 @@
+# Curated ICD-10-CM seed for the orthopedics and pain-medicine beachhead.
+#
+# Scope is deliberately narrow (CLAUDE.md section 4: "Start narrow and manual"):
+# diagnoses that commonly support the beachhead services (lumbar MRI, epidural
+# steroid injections, radiofrequency ablation, major joint injections). This is
+# NOT a complete ICD-10-CM set. The same ingester loads the full CMS release
+# later without changing this format.
+#
+# These are real, public ICD-10-CM codes. Descriptions are ICD-10-CM tabular
+# descriptions (public domain), not CPT (which is out of scope, CLAUDE.md
+# section 2). effective_start reflects the FY2026 code set, valid from the
+# federal fiscal year that begins 2025-10-01. effective_end is null for codes
+# still active; set it when a code is deleted or superseded.
+#
+# No em dashes anywhere (CLAUDE.md formatting rule).
+
+code_system: ICD-10-CM
+source: "CMS ICD-10-CM FY2026 tabular (curated ortho/pain subset)"
+effective_start: 2025-10-01
+effective_end: null
+
+codes:
+  # Low back pain and lumbar region pain
+  - code: M54.50
+    description: "Low back pain, unspecified"
+  - code: M54.51
+    description: "Vertebrogenic low back pain"
+  - code: M54.59
+    description: "Other low back pain"
+
+  # Radiculopathy (nerve root involvement, common ESI indication)
+  - code: M54.16
+    description: "Radiculopathy, lumbar region"
+  - code: M54.17
+    description: "Radiculopathy, lumbosacral region"
+
+  # Sciatica
+  - code: M54.30
+    description: "Sciatica, unspecified side"
+  - code: M54.31
+    description: "Sciatica, right side"
+  - code: M54.32
+    description: "Sciatica, left side"
+
+  # Lumbar intervertebral disc disorders
+  - code: M51.16
+    description: "Intervertebral disc disorders with radiculopathy, lumbar region"
+  - code: M51.17
+    description: "Intervertebral disc disorders with radiculopathy, lumbosacral region"
+  - code: M51.26
+    description: "Other intervertebral disc displacement, lumbar region"
+  - code: M51.36
+    description: "Other intervertebral disc degeneration, lumbar region"
+
+  # Spinal stenosis
+  - code: M48.06
+    description: "Spinal stenosis, lumbar region"
+  - code: M48.061
+    description: "Spinal stenosis, lumbar region without neurogenic claudication"
+  - code: M48.062
+    description: "Spinal stenosis, lumbar region with neurogenic claudication"
+
+  # Spondylosis (facet-mediated pain, RFA indication)
+  - code: M47.816
+    description: "Spondylosis without myelopathy or radiculopathy, lumbar region"
+  - code: M47.817
+    description: "Spondylosis without myelopathy or radiculopathy, lumbosacral region"
+
+  # Major joint pain and osteoarthritis (major joint injection indications)
+  - code: M25.551
+    description: "Pain in right hip"
+  - code: M25.552
+    description: "Pain in left hip"
+  - code: M25.561
+    description: "Pain in right knee"
+  - code: M25.562
+    description: "Pain in left knee"
+  - code: M16.11
+    description: "Unilateral primary osteoarthritis, right hip"
+  - code: M16.12
+    description: "Unilateral primary osteoarthritis, left hip"
+  - code: M17.11
+    description: "Unilateral primary osteoarthritis, right knee"
+  - code: M17.12
+    description: "Unilateral primary osteoarthritis, left knee"
