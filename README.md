@@ -51,12 +51,23 @@ model endpoint or storing anything that could be PHI.
    uv run medilens validate tests/fixtures/synthetic_notes/lumbar_mri_example.txt --requested-service "lumbar MRI" --date-of-service 2026-06-01 --payer Medicare
    ```
 
+8. Run the review UI (a demo/review surface that renders a clearly-labeled SAMPLE recommendation;
+   the reasoning layer is not implemented yet, so it does not analyze the note):
+
+   ```
+   uv sync --extra ui
+   uv run streamlit run src/medilens/ui/app.py
+   ```
+
 ## Layout
 
 - `src/medilens/config.py`: environment-derived settings.
 - `src/medilens/cli.py`: command-line entrypoint (`ingest` and `validate` subcommands).
 - `src/medilens/ingestion.py`: orchestrates loading both seed files into the database.
 - `src/medilens/audit/`: append-only writer for recommendation and audit-log records.
+- `src/medilens/ui/`: Streamlit review surface. Renders a recommendation in a display contract
+  that mirrors the audit-store shape. Currently shows a labeled sample; the reasoning layer will
+  populate the same contract with no UI change.
 - `src/medilens/client/`: Anthropic API client wrapper: token-bucket rate limiting
   (requests/min and tokens/min), retries with exponential backoff and jitter on 429/529,
   retry-after support, pre-send token counting, and schema-enforced structured JSON output.
