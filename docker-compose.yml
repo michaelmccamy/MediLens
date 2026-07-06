@@ -5,8 +5,11 @@ services:
       POSTGRES_USER: medilens
       POSTGRES_PASSWORD: medilens_dev_only
       POSTGRES_DB: medilens
+    # Publish on the host port from MEDILENS_DB_HOST_PORT (default 5432). Set it
+    # to something free (for example 5433) if this machine already runs Postgres
+    # on 5432, and update the port in DATABASE_URL to match.
     ports:
-      - "5432:5432"
+      - "${MEDILENS_DB_HOST_PORT:-5432}:5432"
     volumes:
       - medilens_postgres_data:/var/lib/postgresql/data
 
