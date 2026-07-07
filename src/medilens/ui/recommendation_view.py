@@ -85,6 +85,7 @@ class RecommendationView:
     model_version: str
     prompt_template_version: str
     generated_at: datetime.datetime
+    verification_rejections: list[str] = field(default_factory=list)
 
 
 def view_from_outcome(
@@ -149,6 +150,7 @@ def view_from_outcome(
         model_version=outcome.model_name,
         prompt_template_version=outcome.prompt_template_version,
         generated_at=generated_at,
+        verification_rejections=outcome.verified.rejections,
     )
 
 

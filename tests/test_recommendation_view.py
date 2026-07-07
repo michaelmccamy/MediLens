@@ -120,6 +120,7 @@ def test_view_from_outcome_maps_verified_result_without_alteration() -> None:
         documentation_gaps=["If clinically accurate, document prior imaging."],
         denial_risk_score=0.2,
         denial_risk_rationale="Clauses 1 through 3 satisfied.",
+        rejections=["dropped code X: not in the candidate set"],
     )
     outcome = ValidationOutcome(
         verified=verified,
@@ -156,6 +157,9 @@ def test_view_from_outcome_maps_verified_result_without_alteration() -> None:
         "If clinically accurate, document prior imaging."
     ]
     assert view.denial_risk_score == 0.2
+    assert view.verification_rejections == [
+        "dropped code X: not in the candidate set"
+    ]
 
 
 def test_find_span_locates_and_reports_offsets() -> None:

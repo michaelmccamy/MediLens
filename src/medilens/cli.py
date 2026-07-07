@@ -177,6 +177,14 @@ def _print_outcome(outcome: ValidationOutcome, recommendation_id: int) -> None:
     print(f"denial_risk_score: {verified.denial_risk_score:.2f}")
     print(f"denial_risk_rationale: {verified.denial_risk_rationale}")
     print()
+
+    if len(verified.rejections) > 0:
+        # Surface, never hide, what the model produced that failed grounding.
+        print("dropped by verification (not shown above, not stored as codes):")
+        for rejection in verified.rejections:
+            print(f"  - {rejection}")
+        print()
+
     print(f"model: {outcome.model_name}")
     print(f"prompt_template_version: {outcome.prompt_template_version}")
     print(f"audit_recommendation_id: {recommendation_id}")

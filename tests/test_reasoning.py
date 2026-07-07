@@ -301,9 +301,14 @@ def test_wrapped_line_span_locates_with_true_offsets(
 
 
 # --- regression checks (CLAUDE.md section 8) --------------------------------
+#
+# Verification is per-item: a claim that fails grounding is DROPPED and the
+# reason recorded, while the grounded remainder survives. The section-8
+# guarantee is that a fabricated or unsupported claim never appears in the
+# verified output, not that the whole response is discarded.
 
 
-def test_regression_fabricated_fact_is_rejected(
+def test_regression_fabricated_fact_never_appears_in_output(
     session: Session, note_text: str
 ) -> None:
     output = _make_valid_output()
@@ -314,61 +319,115 @@ def test_regression_fabricated_fact_is_rejected(
         }
     )
 
-    with pytest.raises(GroundingError, match="fabrication"):
-        _run(session, note_text, output)
+    outcome, stub = _run(session, note_text, output)
 
-    assert session.query(Recommendation).count() == 0
+    # The fabricated fact is dropped; the grounded facts and the code survive.
+    fact_texts = [fact.fact for fact in outcome.verified.extracted_facts]
+    assert "Patient had prior lumbar surgery." not in fact_texts
+    assert len(outcome.verified.code_recommendations) == 1
+    assert any("extracted fact" in reason for reason in outcome.verified.rejections)
 
 
-def test_regression_paraphrased_span_is_rejected(
+def test_regression_paraphrased_span_is_dropped(
     session: Session, note_text: str
 ) -> None:
-    # Even a mild paraphrase (case change) breaks provenance and is rejected.
+    # A case change breaks provenance: the fact carrying it is dropped.
     output = _make_valid_output()
     output["extracted_facts"][0]["note_span"] = SPAN_CHIEF_COMPLAINT.lower()
 
-    with pytest.raises(GroundingError):
-        _run(session, note_text, output)
+    outcome, stub = _run(session, note_text, output)
+
+    assert len(outcome.verified.extracted_facts) == 1  # only the second fact
+    assert len(outcome.verified.rejections) >= 1
 
 
-def test_regression_code_outside_candidate_set_is_rejected(
+def test_regression_code_outside_candidate_set_is_dropped(
     session: Session, note_text: str
 ) -> None:
-    # The no-freeform-guessing gate: a code the retrieval layer did not
-    # supply is rejected no matter how plausible it looks.
+    # No-freeform-guessing: a code the retrieval layer did not supply is
+    # dropped, and since it was the only code the output has none.
     output = _make_valid_output()
     output["code_recommendations"][0]["code"] = "S99.999"
 
-    with pytest.raises(GroundingError, match="candidate set"):
-        _run(session, note_text, output)
+    outcome, stub = _run(session, note_text, output)
 
-    assert session.query(Recommendation).count() == 0
+    assert len(outcome.verified.code_recommendations) == 0
+    assert any(
+        "S99.999" in reason and "candidate set" in reason
+        for reason in outcome.verified.rejections
+    )
 
 
-def test_regression_code_without_documentation_support_is_rejected(
+def test_regression_code_without_documentation_support_is_dropped(
     session: Session, note_text: str
 ) -> None:
-    # The upcoding proxy: any recommended code must carry located note-span
-    # support. A code with stronger payment but no stronger documentation
-    # cannot pass this gate because it has no spans to stand on.
+    # The upcoding proxy: a code with no located note-span support is dropped.
     output = _make_valid_output()
     output["code_recommendations"][0]["supporting_note_spans"] = []
 
-    with pytest.raises(GroundingError, match="supporting note spans"):
-        _run(session, note_text, output)
+    outcome, stub = _run(session, note_text, output)
+
+    assert len(outcome.verified.code_recommendations) == 0
+    assert any("no supporting note span" in r for r in outcome.verified.rejections)
 
 
-def test_cited_clause_number_must_exist(session: Session, note_text: str) -> None:
+def test_fabricated_span_dropped_but_grounded_code_survives(
+    session: Session, note_text: str
+) -> None:
+    # This is the case that used to fail the entire output. A code with one
+    # real span and one fabricated span keeps the real span and survives; the
+    # fabricated span is dropped and recorded.
+    output = _make_valid_output()
+    output["code_recommendations"][0]["supporting_note_spans"] = [
+        SPAN_CHIEF_COMPLAINT,
+        "Prior L4-L5 discectomy in 2020",
+    ]
+
+    outcome, stub = _run(session, note_text, output)
+
+    assert len(outcome.verified.code_recommendations) == 1
+    recommendation = outcome.verified.code_recommendations[0]
+    span_texts = [span.text for span in recommendation.supporting_spans]
+    assert SPAN_CHIEF_COMPLAINT in span_texts
+    assert "Prior L4-L5 discectomy in 2020" not in span_texts
+    assert any("supporting span" in r for r in outcome.verified.rejections)
+
+
+def test_invalid_clause_dropped_but_code_survives_on_valid_clause(
+    session: Session, note_text: str
+) -> None:
+    output = _make_valid_output()
+    output["code_recommendations"][0]["cited_policy_clauses"] = [
+        {"policy_identifier": "SYN-LUMBAR-MRI-001", "clause_number": 3},
+        {"policy_identifier": "SYN-LUMBAR-MRI-001", "clause_number": 99},
+    ]
+
+    outcome, stub = _run(session, note_text, output)
+
+    assert len(outcome.verified.code_recommendations) == 1
+    clause_numbers = [
+        clause.clause_number
+        for clause in outcome.verified.code_recommendations[0].cited_clauses
+    ]
+    assert clause_numbers == [3]
+    assert any("clause 99" in r for r in outcome.verified.rejections)
+
+
+def test_code_with_only_invalid_clause_is_dropped(
+    session: Session, note_text: str
+) -> None:
     output = _make_valid_output()
     output["code_recommendations"][0]["cited_policy_clauses"] = [
         {"policy_identifier": "SYN-LUMBAR-MRI-001", "clause_number": 99}
     ]
 
-    with pytest.raises(GroundingError, match="clause 99"):
-        _run(session, note_text, output)
+    outcome, stub = _run(session, note_text, output)
+
+    assert len(outcome.verified.code_recommendations) == 0
+    assert any("clause 99" in r for r in outcome.verified.rejections)
 
 
-def test_cited_policy_must_be_in_retrieved_set(
+def test_cited_policy_not_in_retrieved_set_is_dropped(
     session: Session, note_text: str
 ) -> None:
     output = _make_valid_output()
@@ -376,33 +435,60 @@ def test_cited_policy_must_be_in_retrieved_set(
         {"policy_identifier": "SYN-DOES-NOT-EXIST", "clause_number": 1}
     ]
 
-    with pytest.raises(GroundingError, match="SYN-DOES-NOT-EXIST"):
-        _run(session, note_text, output)
+    outcome, stub = _run(session, note_text, output)
+
+    assert len(outcome.verified.code_recommendations) == 0
+    assert any("SYN-DOES-NOT-EXIST" in r for r in outcome.verified.rejections)
 
 
-def test_code_without_policy_clauses_is_rejected(
+def test_unconditional_documentation_gap_is_dropped(
     session: Session, note_text: str
 ) -> None:
     output = _make_valid_output()
-    output["code_recommendations"][0]["cited_policy_clauses"] = []
+    output["documentation_gaps"] = [
+        "Document symptom duration of 8 weeks.",  # not conditional, dropped
+        "If clinically accurate, document prior imaging.",  # kept
+    ]
 
-    with pytest.raises(GroundingError, match="cites no policy clauses"):
-        _run(session, note_text, output)
+    outcome, stub = _run(session, note_text, output)
+
+    assert outcome.verified.documentation_gaps == [
+        "If clinically accurate, document prior imaging."
+    ]
+    assert any("documentation gap" in r for r in outcome.verified.rejections)
 
 
-def test_unconditional_documentation_gap_is_rejected(
+def test_all_dropped_output_still_persists_with_reasons(
     session: Session, note_text: str
 ) -> None:
+    # If every code is dropped, the outcome is an honest "no supported codes"
+    # plus reasons, and it is still storable with the reasons in the audit log.
     output = _make_valid_output()
-    output["documentation_gaps"] = ["Document symptom duration of 8 weeks."]
+    output["code_recommendations"][0]["code"] = "S99.999"
 
-    with pytest.raises(GroundingError, match="conditionally"):
-        _run(session, note_text, output)
+    outcome, stub = _run(session, note_text, output)
+    recommendation_id = persist_validation(
+        session, _make_request(note_text), outcome, FIXED_CREATED_AT
+    )
+
+    assert len(outcome.verified.code_recommendations) == 0
+    assert len(outcome.verified.rejections) >= 1
+    import json
+
+    audit_entry = (
+        session.query(AuditLogEntry)
+        .filter(AuditLogEntry.recommendation_id == recommendation_id)
+        .one()
+    )
+    detail = json.loads(audit_entry.detail_json)
+    assert len(detail["verification_rejections"]) >= 1
 
 
-def test_denial_risk_score_out_of_bounds_is_rejected(
+def test_denial_risk_score_out_of_bounds_still_hard_rejects(
     session: Session, note_text: str
 ) -> None:
+    # The one remaining hard stop: an out-of-scale score is structural, not a
+    # per-item grounding miss, so it raises rather than dropping an item.
     output = _make_valid_output()
     output["denial_risk_score"] = 1.7
 

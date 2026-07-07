@@ -227,6 +227,7 @@ def persist_validation(
         "source_label": request.source_label,
         "documentation_gaps": outcome.verified.documentation_gaps,
         "denial_risk_rationale": outcome.verified.denial_risk_rationale,
+        "verification_rejections": outcome.verified.rejections,
         "model_request_id": outcome.request_id,
         "input_tokens": outcome.input_tokens,
         "output_tokens": outcome.output_tokens,

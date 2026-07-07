@@ -221,6 +221,16 @@ def _render_recommendation(recommendation: RecommendationView) -> None:
     st.write(f"{band} ({recommendation.denial_risk_score:.2f})")
     st.write(recommendation.denial_risk_rationale)
 
+    if len(recommendation.verification_rejections) > 0:
+        st.subheader("Dropped by verification")
+        st.caption(
+            "The model produced these, but they failed a grounding check and "
+            "were not shown as recommendations or stored as codes. They are "
+            "listed here for transparency and are recorded in the audit trail."
+        )
+        for rejection in recommendation.verification_rejections:
+            st.markdown(f"- {rejection}")
+
     st.subheader("Provenance")
     st.caption("Every recommendation is reconstructable for audit.")
     st.write(f"Model: {recommendation.model_name} ({recommendation.model_version})")
