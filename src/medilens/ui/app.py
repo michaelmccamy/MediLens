@@ -1,10 +1,11 @@
 """Streamlit review surface for coding recommendations.
 
-A review and demo surface for a human coder, additive to the CLI (the locked
-MVP interface). It renders a recommendation in the display contract from
-recommendation_view. The reasoning layer is not implemented yet, so this shows
-a clearly-labeled SAMPLE: the point tonight is the review UX and the guardrail
-framing, not a real analysis.
+A review surface for a human coder, additive to the CLI (the locked MVP
+interface). When the environment is configured (API key and database), a
+submitted note runs the real reasoning pipeline: date-resolved retrieval,
+model call, grounding verification, and an append-only audit record. When
+configuration is missing, it falls back to a clearly-labeled SAMPLE so the
+surface is still demonstrable.
 
 Run with:
     uv run streamlit run src/medilens/ui/app.py
@@ -16,17 +17,21 @@ CLAUDE.md guardrails visible in this surface:
 - Human in the loop: every code is a suggestion for a person to review; there is
   no submit action and the tool never sends anything to a payer.
 - Grounding and provenance (guardrail 4): each code shows its supporting note
-  spans and the cited policy clause.
+  spans and the cited policy clause. Output that fails a grounding check is
+  shown as an error, never rendered as a recommendation.
 """
 
 import datetime
+import hashlib
 from pathlib import Path
 
 import streamlit as st
 
+from medilens.reasoning.verification import GroundingError
 from medilens.ui.recommendation_view import (
     RecommendationView,
     build_sample_recommendation,
+    view_from_outcome,
 )
 
 DEFAULT_PAYERS = ["Medicare", "National Commercial Payer A"]
@@ -57,11 +62,33 @@ def _load_default_note() -> str:
     return FALLBACK_NOTE
 
 
+def _try_load_settings():
+    """Load settings, returning None (not raising) when configuration is missing.
+
+    The UI degrades to the labeled sample instead of crashing, but never
+    silently: the mode banner tells the user which mode they are in.
+    """
+    from medilens.config import load_settings
+
+    try:
+        return load_settings()
+    except RuntimeError:
+        return None
+
+
 def _render_sample_banner() -> None:
     st.error(
-        "SAMPLE OUTPUT. The reasoning layer is not implemented yet, so this "
-        "screen shows a fixed illustrative example. It does not analyze the "
-        "note. Do not use it for any real coding decision."
+        "SAMPLE OUTPUT. ANTHROPIC_API_KEY or DATABASE_URL is not configured, "
+        "so this screen shows a fixed illustrative example. It does not "
+        "analyze the note. Do not use it for any real coding decision."
+    )
+
+
+def _render_live_banner(settings) -> None:
+    st.success(
+        f"Live mode: model {settings.model_name}, database configured. "
+        "Submitted notes are validated by the reasoning pipeline and written "
+        "to the audit store. Synthetic, de-identified notes only."
     )
 
 
@@ -75,6 +102,47 @@ def _render_honesty_notes() -> None:
         "to review. This tool does not make final coding decisions and never "
         "submits anything to a payer."
     )
+
+
+def _run_live_validation(
+    settings, note_text: str, requested_service: str,
+    date_of_service: datetime.date, payer_name: str,
+) -> tuple[RecommendationView, int]:
+    """Run the real pipeline and persist the result, returning view + audit id.
+
+    Imports are local so the app still renders in sample mode without a
+    database driver configured. input_reference is a content hash: an opaque
+    pointer to the pasted note, not the note text (CLAUDE.md section 6).
+    """
+    from medilens.client.anthropic_client import ModelClient
+    from medilens.db.session import build_engine, build_session_factory
+    from medilens.reasoning.pipeline import (
+        ValidationRequest,
+        persist_validation,
+        run_validation,
+    )
+    from medilens.reasoning.prompts import load_prompt_template
+
+    note_hash = hashlib.sha256(note_text.encode("utf-8")).hexdigest()[:16]
+    request = ValidationRequest(
+        note_text=note_text,
+        input_reference=f"ui-note-{note_hash}",
+        requested_service=requested_service,
+        date_of_service=date_of_service,
+        payer_name=payer_name,
+    )
+    prompt_template = load_prompt_template()
+    model_client = ModelClient(settings)
+
+    engine = build_engine(settings)
+    session_factory = build_session_factory(engine)
+    with session_factory() as session:
+        outcome = run_validation(session, model_client, request, prompt_template)
+        created_at = datetime.datetime.now(datetime.timezone.utc)
+        recommendation_id = persist_validation(session, request, outcome, created_at)
+
+    view = view_from_outcome(request, outcome, created_at)
+    return view, recommendation_id
 
 
 def _risk_band(score: float) -> str:
@@ -96,6 +164,11 @@ def _render_recommendation(recommendation: RecommendationView) -> None:
     )
 
     st.subheader("Recommended codes")
+    if len(recommendation.code_suggestions) == 0:
+        st.write(
+            "No supported codes found in the documentation. See the denial "
+            "risk rationale and documentation gaps below."
+        )
     for suggestion in recommendation.code_suggestions:
         st.markdown(
             f"**{suggestion.code}** ({suggestion.code_system}): "
@@ -147,13 +220,19 @@ def _render_recommendation(recommendation: RecommendationView) -> None:
     st.caption("Every recommendation is reconstructable for audit.")
     st.write(f"Model: {recommendation.model_name} ({recommendation.model_version})")
     st.write(f"Prompt template version: {recommendation.prompt_template_version}")
+    st.write(f"Input reference: {recommendation.input_reference}")
     st.write(f"Generated at: {recommendation.generated_at.isoformat()}")
 
 
 def main() -> None:
-    st.set_page_config(page_title="MediLens review (sample)", layout="wide")
+    st.set_page_config(page_title="MediLens review", layout="wide")
     st.title("MediLens documentation and coding review")
-    _render_sample_banner()
+
+    settings = _try_load_settings()
+    if settings is None:
+        _render_sample_banner()
+    else:
+        _render_live_banner(settings)
     _render_honesty_notes()
 
     with st.form("review_request"):
@@ -169,9 +248,12 @@ def main() -> None:
             "Date of service", value=datetime.date(2026, 6, 1)
         )
         payer_name = st.selectbox("Payer", DEFAULT_PAYERS)
-        submitted = st.form_submit_button("Show sample recommendation")
+        submitted = st.form_submit_button("Check documentation")
 
-    if submitted:
+    if not submitted:
+        return
+
+    if settings is None:
         recommendation = build_sample_recommendation(
             note_text=note_text,
             requested_service=requested_service,
@@ -181,6 +263,29 @@ def main() -> None:
         )
         _render_sample_banner()
         _render_recommendation(recommendation)
+        return
+
+    try:
+        with st.spinner("Validating documentation against payer policy..."):
+            recommendation, recommendation_id = _run_live_validation(
+                settings, note_text, requested_service, date_of_service, payer_name
+            )
+    except GroundingError as error:
+        # Output that fails a grounding gate is never rendered as a
+        # recommendation and nothing was stored (guardrails 1 and 4).
+        st.error(
+            "The model output failed a grounding check and was rejected: "
+            f"{error} Nothing was stored. Please retry."
+        )
+        return
+    except RuntimeError as error:
+        # Missing retrieval data (for example: seeds not ingested, unknown
+        # payer, date outside every effective window).
+        st.error(str(error))
+        return
+
+    _render_recommendation(recommendation)
+    st.caption(f"Audit recommendation id: {recommendation_id}")
 
 
 main()

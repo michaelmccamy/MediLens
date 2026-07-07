@@ -6,8 +6,17 @@ without the ui extra installed.
 
 import datetime
 
+from medilens.reasoning.pipeline import ValidationOutcome, ValidationRequest
+from medilens.reasoning.verification import (
+    LocatedSpan,
+    VerifiedClauseCitation,
+    VerifiedCodeRecommendation,
+    VerifiedFact,
+    VerifiedValidation,
+)
 from medilens.ui.recommendation_view import (
     build_sample_recommendation,
+    view_from_outcome,
     _find_span,
 )
 
@@ -80,6 +89,73 @@ def test_spans_unlocated_when_note_differs() -> None:
     suggestion = recommendation.code_suggestions[0]
     for span in suggestion.supporting_note_spans:
         assert not span.is_located
+
+
+def test_view_from_outcome_maps_verified_result_without_alteration() -> None:
+    verified = VerifiedValidation(
+        extracted_facts=[
+            VerifiedFact(
+                fact="Radicular pain for 8 weeks.",
+                span=LocatedSpan(text="8 weeks", start_offset=10, end_offset=17),
+            )
+        ],
+        code_recommendations=[
+            VerifiedCodeRecommendation(
+                code="M54.16",
+                code_system="ICD-10-CM",
+                description="Radiculopathy, lumbar region",
+                rationale="Most specific supported code.",
+                supporting_spans=[
+                    LocatedSpan(text="8 weeks", start_offset=10, end_offset=17)
+                ],
+                cited_clauses=[
+                    VerifiedClauseCitation(
+                        policy_identifier="SYN-LUMBAR-MRI-001",
+                        clause_number=3,
+                        clause_text="Objective neurologic findings documented.",
+                    )
+                ],
+            )
+        ],
+        documentation_gaps=["If clinically accurate, document prior imaging."],
+        denial_risk_score=0.2,
+        denial_risk_rationale="Clauses 1 through 3 satisfied.",
+    )
+    outcome = ValidationOutcome(
+        verified=verified,
+        model_name="claude-sonnet-5",
+        prompt_template_version="validation_v1",
+        request_id="req_test",
+        input_tokens=900,
+        output_tokens=250,
+    )
+    request = ValidationRequest(
+        note_text="note",
+        input_reference="ui-note-abc123",
+        requested_service="lumbar MRI",
+        date_of_service=datetime.date(2026, 6, 1),
+        payer_name="Medicare",
+    )
+
+    view = view_from_outcome(request, outcome, GENERATED_AT)
+
+    assert view.is_sample is False
+    assert view.input_reference == "ui-note-abc123"
+    assert view.model_name == "claude-sonnet-5"
+    assert view.prompt_template_version == "validation_v1"
+    suggestion = view.code_suggestions[0]
+    assert suggestion.code == "M54.16"
+    assert suggestion.description == "Radiculopathy, lumbar region"
+    span = suggestion.supporting_note_spans[0]
+    assert span.is_located
+    assert (span.start_offset, span.end_offset) == (10, 17)
+    clause = suggestion.cited_policy_clauses[0]
+    assert clause.policy_identifier == "SYN-LUMBAR-MRI-001"
+    assert clause.clause_number == 3
+    assert view.documentation_gaps == [
+        "If clinically accurate, document prior imaging."
+    ]
+    assert view.denial_risk_score == 0.2
 
 
 def test_find_span_locates_and_reports_offsets() -> None:

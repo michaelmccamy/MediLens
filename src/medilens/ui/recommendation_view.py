@@ -20,6 +20,8 @@ Python and unit-testable without the UI.
 import datetime
 from dataclasses import dataclass, field
 
+from medilens.reasoning.pipeline import ValidationOutcome, ValidationRequest
+
 
 @dataclass
 class NoteSpan:
@@ -83,6 +85,71 @@ class RecommendationView:
     model_version: str
     prompt_template_version: str
     generated_at: datetime.datetime
+
+
+def view_from_outcome(
+    request: ValidationRequest,
+    outcome: ValidationOutcome,
+    generated_at: datetime.datetime,
+) -> RecommendationView:
+    """Map a verified pipeline outcome onto the display contract.
+
+    Pure translation, no reasoning: everything shown was already verified by
+    the grounding gates, so this function must not add, drop, or reword any
+    claim. Facts are shown as their fact text; each code carries its located
+    spans (real offsets) and resolved clause text.
+    """
+    extracted_facts: list[str] = []
+    for fact in outcome.verified.extracted_facts:
+        extracted_facts.append(fact.fact)
+
+    code_suggestions: list[CodeSuggestion] = []
+    for recommendation in outcome.verified.code_recommendations:
+        spans: list[NoteSpan] = []
+        for located in recommendation.supporting_spans:
+            spans.append(
+                NoteSpan(
+                    text=located.text,
+                    start_offset=located.start_offset,
+                    end_offset=located.end_offset,
+                )
+            )
+        clauses: list[PolicyClauseCitation] = []
+        for clause in recommendation.cited_clauses:
+            clauses.append(
+                PolicyClauseCitation(
+                    policy_identifier=clause.policy_identifier,
+                    clause_number=clause.clause_number,
+                    clause_text=clause.clause_text,
+                )
+            )
+        code_suggestions.append(
+            CodeSuggestion(
+                code=recommendation.code,
+                code_system=recommendation.code_system,
+                description=recommendation.description,
+                rationale=recommendation.rationale,
+                supporting_note_spans=spans,
+                cited_policy_clauses=clauses,
+            )
+        )
+
+    return RecommendationView(
+        is_sample=False,
+        input_reference=request.input_reference,
+        requested_service=request.requested_service,
+        date_of_service=request.date_of_service,
+        payer_name=request.payer_name,
+        extracted_facts=extracted_facts,
+        code_suggestions=code_suggestions,
+        documentation_gaps=outcome.verified.documentation_gaps,
+        denial_risk_score=outcome.verified.denial_risk_score,
+        denial_risk_rationale=outcome.verified.denial_risk_rationale,
+        model_name=outcome.model_name,
+        model_version=outcome.model_name,
+        prompt_template_version=outcome.prompt_template_version,
+        generated_at=generated_at,
+    )
 
 
 def _find_span(note_text: str, phrase: str) -> NoteSpan:
