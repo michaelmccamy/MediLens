@@ -9,12 +9,40 @@ date a policy is in force (inclusive).
 """
 
 import datetime
+import re
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from medilens.date_resolution import effective_date_window
 from medilens.db.models import PayerPolicy
+
+
+def _tokens(text: str) -> set[str]:
+    """Lowercase alphanumeric tokens of a phrase, for service matching."""
+    return set(re.findall(r"[a-z0-9]+", text.lower()))
+
+
+def service_matches(requested_service: str, service_keywords: str) -> bool:
+    """Decide whether a requested service is governed by a policy.
+
+    service_keywords is the policy's curated, comma-joined keyword list. The
+    request matches when every token of any one keyword phrase appears in the
+    request. This is deterministic and explainable (the matching phrase can be
+    named in an audit), which matters more here than linguistic cleverness: a
+    policy must never be applied to a service it does not govern, and a miss
+    is surfaced loudly rather than silently mismatched.
+    """
+    requested_tokens = _tokens(requested_service)
+    if len(requested_tokens) == 0:
+        return False
+    for keyword_phrase in service_keywords.split(","):
+        keyword_tokens = _tokens(keyword_phrase)
+        if len(keyword_tokens) == 0:
+            continue
+        if keyword_tokens <= requested_tokens:
+            return True
+    return False
 
 
 def find_policy_at_date(
@@ -60,3 +88,28 @@ def list_policies_for_payer_at_date(
     )
     result_rows = session.execute(query).scalars().all()
     return list(result_rows)
+
+
+def list_policies_for_service_at_date(
+    session: Session,
+    payer_name: str,
+    specialty: str,
+    requested_service: str,
+    date_of_service: datetime.date,
+) -> list[PayerPolicy]:
+    """Return the payer's in-force policies that govern the requested service.
+
+    The service filter runs in Python over the payer's in-force policy set
+    (small by construction: curated per payer and specialty), because keyword
+    matching is not expressible as a portable SQL predicate. Policies without
+    service keywords (pre-service-matching rows) never match; they are legacy
+    versions kept for audit history.
+    """
+    all_policies = list_policies_for_payer_at_date(
+        session, payer_name, specialty, date_of_service
+    )
+    matching_policies: list[PayerPolicy] = []
+    for policy in all_policies:
+        if service_matches(requested_service, policy.service_keywords):
+            matching_policies.append(policy)
+    return matching_policies

@@ -32,14 +32,16 @@ def _make_record(
         ]
     if cited_policy_clauses is None:
         cited_policy_clauses = [
-            {"policy_identifier": "SYN-LUMBAR-MRI-001", "clause": 1}
+            {"code": "M54.16", "policy_identifier": "SYN-LUMBAR-MRI-001", "clause_number": 1}
         ]
     return RecommendationRecord(
         input_reference=input_reference,
         date_of_service=datetime.date(2026, 6, 1),
         payer_name="Medicare",
         extracted_facts={"symptom_duration_weeks": 8, "conservative_therapy": True},
-        recommended_codes=[{"code": "M54.16", "code_system": "ICD-10-CM"}],
+        recommended_codes=[
+            {"code": "M54.16", "code_system": "ICD-10-CM", "has_coverage_basis": True}
+        ],
         cited_note_spans=cited_note_spans,
         cited_policy_clauses=cited_policy_clauses,
         denial_risk_score=0.23,
@@ -69,7 +71,7 @@ def test_structured_fields_round_trip_through_json(session: Session) -> None:
 
     stored = session.get(Recommendation, recommendation_id)
     assert json.loads(stored.recommended_codes_json) == [
-        {"code": "M54.16", "code_system": "ICD-10-CM"}
+        {"code": "M54.16", "code_system": "ICD-10-CM", "has_coverage_basis": True}
     ]
     assert json.loads(stored.extracted_facts_json) == {
         "symptom_duration_weeks": 8,
@@ -127,6 +129,32 @@ def test_rejects_recommendation_without_policy_clauses(session: Session) -> None
     record = _make_record(cited_policy_clauses=[])
 
     with pytest.raises(ValueError, match="policy clause"):
+        write_recommendation(session, record, FIXED_CREATED_AT)
+
+    assert session.query(Recommendation).count() == 0
+
+
+def test_code_without_coverage_basis_is_storable_when_declared(
+    session: Session,
+) -> None:
+    # Coverage decoupling: a documentation-supported code with NO coverage
+    # basis is a valid, honest state, storable when declared explicitly.
+    record = _make_record(cited_policy_clauses=[])
+    record.recommended_codes = [
+        {"code": "M54.16", "code_system": "ICD-10-CM", "has_coverage_basis": False}
+    ]
+
+    recommendation_id = write_recommendation(session, record, FIXED_CREATED_AT)
+
+    assert session.get(Recommendation, recommendation_id) is not None
+
+
+def test_code_without_declared_coverage_state_is_rejected(session: Session) -> None:
+    # Coverage must be declared, never implied by absence of the field.
+    record = _make_record()
+    record.recommended_codes = [{"code": "M54.16", "code_system": "ICD-10-CM"}]
+
+    with pytest.raises(ValueError, match="has_coverage_basis"):
         write_recommendation(session, record, FIXED_CREATED_AT)
 
     assert session.query(Recommendation).count() == 0

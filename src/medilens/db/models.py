@@ -34,7 +34,15 @@ class CodeSetEntry(Base):
 
 
 class PayerPolicy(Base):
-    """A versioned payer medical policy or prior-authorization criterion."""
+    """A versioned payer medical policy or prior-authorization criterion.
+
+    service is the human-readable label of the service the policy governs.
+    service_keywords is a curated, comma-separated list of lowercase keyword
+    phrases used to match a requested service to this policy; retrieval must
+    never apply a policy to a service it does not govern. Both fields default
+    to empty for rows ingested before service matching existed; such rows are
+    excluded from service-matched retrieval.
+    """
 
     __tablename__ = "payer_policy"
 
@@ -42,6 +50,8 @@ class PayerPolicy(Base):
     payer_name: Mapped[str] = mapped_column(String(128))
     policy_identifier: Mapped[str] = mapped_column(String(128))
     specialty: Mapped[str] = mapped_column(String(128))
+    service: Mapped[str] = mapped_column(String(256), default="")
+    service_keywords: Mapped[str] = mapped_column(String(256), default="")
     policy_text: Mapped[str]
     effective_start: Mapped[datetime.date]
     effective_end: Mapped[datetime.date | None]

@@ -79,8 +79,10 @@ model endpoint or storing anything that could be PHI.
   retrieval that resolves codes against the date of service. HCPCS Level II and NCCI edits later.
 - `src/medilens/policy/`: payer medical-necessity policy ingestion and date-resolved retrieval.
   Ships a curated, synthetic ortho/pain policy seed (`seed/`) with numbered, citable criteria,
-  an idempotent versioned ingester, and retrieval scoped by payer and specialty at the date of
-  service. The seed criteria are synthetic development data, not authoritative payer text.
+  an idempotent versioned ingester, and retrieval scoped by payer, specialty, and requested
+  service at the date of service. Each policy carries curated service keywords; a request whose
+  service no loaded policy governs is refused before any model call, with the loaded services
+  named. The seed criteria are synthetic development data, not authoritative payer text.
 - `src/medilens/reasoning/`: the reasoning pipeline. Loads a versioned prompt template
   (`src/medilens/prompts/`), feeds the model the note plus date-resolved candidate codes and
   payer policies, and mechanically verifies the output before anything is shown or stored:

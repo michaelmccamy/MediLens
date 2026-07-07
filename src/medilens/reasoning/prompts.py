@@ -20,7 +20,11 @@ from medilens.db.models import CodeSetEntry, PayerPolicy
 _PROMPTS_DIR = Path(__file__).resolve().parent.parent / "prompts"
 
 DEFAULT_VALIDATION_PROMPT_NAME = "validation"
-DEFAULT_VALIDATION_PROMPT_VERSION = "v1"
+# v2: clause citations may legitimately be empty when no provided clause
+# applies to a code (coverage decoupling); v1 required a clause per code.
+# Old template files are never edited or deleted, so any audit record's
+# prompt_template_version can be reproduced exactly.
+DEFAULT_VALIDATION_PROMPT_VERSION = "v2"
 
 
 @dataclass(frozen=True)

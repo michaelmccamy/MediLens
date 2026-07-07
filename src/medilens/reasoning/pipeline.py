@@ -22,7 +22,10 @@ from sqlalchemy.orm import Session
 from medilens.audit.writer import RecommendationRecord, write_recommendation
 from medilens.knowledge.retrieval import list_codes_at_date
 from medilens.phi.screening import assert_no_blocking_phi
-from medilens.policy.retrieval import list_policies_for_payer_at_date
+from medilens.policy.retrieval import (
+    list_policies_for_payer_at_date,
+    service_matches,
+)
 from medilens.reasoning.prompts import PromptTemplate, build_user_content
 from medilens.reasoning.schema import VALIDATION_OUTPUT_SCHEMA
 from medilens.reasoning.verification import (
@@ -34,6 +37,39 @@ from medilens.reasoning.verification import (
 # request parameters when the product expands beyond the beachhead.
 BEACHHEAD_CODE_SYSTEM = "ICD-10-CM"
 BEACHHEAD_SPECIALTY = "Orthopedics and pain medicine"
+
+
+class NoApplicablePolicyError(Exception):
+    """No loaded policy governs the requested service for this payer.
+
+    Raised before any model call. Validating against an inapplicable policy
+    would produce a confused half-answer (the model reasoning about criteria
+    that do not govern the service), which is exactly the silent guessing
+    CLAUDE.md section 7 forbids. The message names the services that ARE
+    loaded for the payer, so the operator can tell a wording mismatch from a
+    genuinely missing policy.
+    """
+
+    def __init__(
+        self,
+        payer_name: str,
+        requested_service: str,
+        available_services: list[str],
+    ) -> None:
+        self.payer_name = payer_name
+        self.requested_service = requested_service
+        self.available_services = available_services
+        if len(available_services) > 0:
+            available_text = "; ".join(available_services)
+        else:
+            available_text = "(none)"
+        super().__init__(
+            f"no {payer_name} policy in force governs the requested service "
+            f"{requested_service!r}. Services with loaded policies for this "
+            f"payer: {available_text}. Coverage cannot be assessed, so "
+            "validation is refused rather than checked against an "
+            "inapplicable policy."
+        )
 
 
 @dataclass(frozen=True)
@@ -109,18 +145,36 @@ def run_validation(
             "or check the date of service"
         )
 
-    policies = list_policies_for_payer_at_date(
+    payer_policies = list_policies_for_payer_at_date(
         session,
         request.payer_name,
         BEACHHEAD_SPECIALTY,
         request.date_of_service,
     )
-    if len(policies) == 0:
+    if len(payer_policies) == 0:
         raise RuntimeError(
             f"no {request.payer_name!r} policies for "
             f"{BEACHHEAD_SPECIALTY!r} in force on "
             f"{request.date_of_service.isoformat()}; refusing to validate "
             "without policy grounding"
+        )
+
+    # Only policies that govern the requested service reach the model. Feeding
+    # an inapplicable policy produces confused half-answers; refusing here is
+    # the honest outcome (section 7) and costs no model call.
+    policies = []
+    for policy in payer_policies:
+        if service_matches(request.requested_service, policy.service_keywords):
+            policies.append(policy)
+    if len(policies) == 0:
+        available_services: list[str] = []
+        for policy in payer_policies:
+            if policy.service and policy.service not in available_services:
+                available_services.append(policy.service)
+        raise NoApplicablePolicyError(
+            payer_name=request.payer_name,
+            requested_service=request.requested_service,
+            available_services=available_services,
         )
 
     user_content = build_user_content(
@@ -189,6 +243,9 @@ def persist_validation(
                 "code_system": recommendation.code_system,
                 "description": recommendation.description,
                 "rationale": recommendation.rationale,
+                # Explicit coverage state: True means verified clause citations
+                # exist for this code; False means documentation-supported only.
+                "has_coverage_basis": recommendation.has_coverage_basis,
             }
         )
         for span in recommendation.supporting_spans:

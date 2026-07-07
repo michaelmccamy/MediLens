@@ -8,9 +8,12 @@ shown to a coder or persisted, enforcing CLAUDE.md guardrails in code:
   supporting span must appear verbatim in the note. A span that does not locate
   is treated as fabrication.
 - Guardrail 4 (grounding and provenance): every recommended code must be in the
-  date-resolved candidate set (no freeform code guessing), must carry at least
-  one located note span, and every cited policy clause must exist in the
-  retrieved policies.
+  date-resolved candidate set (no freeform code guessing) and must carry at
+  least one located note span. Cited policy clauses must exist in the retrieved
+  policies; invalid citations are dropped. Documentation support and coverage
+  basis are decoupled: a supported code whose clause citations all fail
+  verification survives with has_coverage_basis False, an explicit state every
+  surface renders, rather than being discarded or silently implying coverage.
 - Guardrail 2 (no upcoding): the enforceable proxy today is that a code without
   located documentation support is dropped. Payment-aware ranking needs fee
   schedule data the MVP does not have; when that lands, the check belongs here.
@@ -74,12 +77,26 @@ class VerifiedClauseCitation:
 
 @dataclass(frozen=True)
 class VerifiedCodeRecommendation:
+    """One recommendation with verified documentation support.
+
+    Documentation support (located note spans) and coverage basis (verified
+    policy clauses) are separate questions. A code with spans but no valid
+    clause is still a useful, honest finding: "supported by the note; no
+    coverage basis cited". has_coverage_basis makes that state explicit so
+    every surface (UI, CLI, audit record) must confront it rather than
+    implying coverage.
+    """
+
     code: str
     code_system: str
     description: str
     rationale: str
     supporting_spans: list[LocatedSpan]
     cited_clauses: list[VerifiedClauseCitation]
+
+    @property
+    def has_coverage_basis(self) -> bool:
+        return len(self.cited_clauses) > 0
 
 
 @dataclass(frozen=True)
@@ -281,13 +298,10 @@ def verify_validation_output(
                     clause_text=clause_text,
                 )
             )
-        if len(cited_clauses) == 0:
-            rejections.append(
-                f"dropped code {code}: no valid policy clause could be cited, "
-                "so it has no coverage basis (guardrail 4)"
-            )
-            continue
-
+        # Documentation support and coverage basis are decoupled: a code with
+        # located spans but no valid clause survives, explicitly flagged via
+        # has_coverage_basis, instead of being discarded. The reviewer decides
+        # what a supported-but-uncovered code means for the claim.
         verified_recommendations.append(
             VerifiedCodeRecommendation(
                 code=code,

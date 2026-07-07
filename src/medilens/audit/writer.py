@@ -131,14 +131,18 @@ def _reject_oversized_input_reference(record: RecommendationRecord) -> None:
 
 
 def _reject_ungrounded(record: RecommendationRecord) -> None:
-    """Fail loudly if recommended codes lack note-span or policy citations.
+    """Fail loudly if recommended codes lack grounding or hide coverage state.
 
-    CLAUDE.md guardrail 4 forbids freeform code guessing: every recommended
-    code must cite the supporting note span and the policy clause used. A
-    record with NO recommended codes is legitimate and storable; "the note
-    does not support a code" is itself an auditable finding (guardrail 4 says
-    to say so rather than infer). What must never be stored is a code without
-    its grounding.
+    CLAUDE.md guardrail 4 forbids freeform code guessing. A record with NO
+    recommended codes is legitimate and storable; "the note does not support a
+    code" is itself an auditable finding. When codes exist:
+
+    - There must be cited note spans (documentation support is never optional).
+    - Every code entry must state has_coverage_basis explicitly. Coverage and
+      documentation support are decoupled, so "no coverage basis" is a valid
+      state, but it must be declared, never implied by absence.
+    - A code claiming a coverage basis must actually have a clause cited for
+      it in cited_policy_clauses.
     """
     if not record.recommended_codes:
         return
@@ -147,8 +151,23 @@ def _reject_ungrounded(record: RecommendationRecord) -> None:
             "recommendation has codes but no cited note spans; guardrail 4 "
             "requires a supporting note span for every recommended code"
         )
-    if not record.cited_policy_clauses:
-        raise ValueError(
-            "recommendation has codes but no cited policy clauses; guardrail 4 "
-            "requires the specific policy clause used for every recommended code"
-        )
+
+    codes_with_clauses = set()
+    if isinstance(record.cited_policy_clauses, list):
+        for clause_entry in record.cited_policy_clauses:
+            if isinstance(clause_entry, dict) and "code" in clause_entry:
+                codes_with_clauses.add(clause_entry["code"])
+
+    for code_entry in record.recommended_codes:
+        if not isinstance(code_entry, dict) or "has_coverage_basis" not in code_entry:
+            raise ValueError(
+                "every recommended code must state has_coverage_basis "
+                "explicitly; coverage must be declared, never implied"
+            )
+        if code_entry["has_coverage_basis"]:
+            if code_entry.get("code") not in codes_with_clauses:
+                raise ValueError(
+                    f"code {code_entry.get('code')!r} claims a coverage basis "
+                    "but cites no policy clause; guardrail 4 requires the "
+                    "specific clause used"
+                )

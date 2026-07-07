@@ -24,6 +24,7 @@ from sqlalchemy.orm import Session
 from medilens.db.models import AuditLogEntry, Base, Recommendation
 from medilens.ingestion import run_ingestion
 from medilens.reasoning.pipeline import (
+    NoApplicablePolicyError,
     ValidationRequest,
     content_reference,
     persist_validation,
@@ -151,6 +152,15 @@ def test_prompt_template_loads_with_version() -> None:
     template = load_prompt_template()
 
     assert template.name == "validation"
+    assert template.version == "v2"
+    assert "CANDIDATE CODES" in template.text
+
+
+def test_prior_prompt_versions_remain_loadable() -> None:
+    # Old template files are never edited or deleted, so any audit record's
+    # prompt_template_version can be reproduced exactly.
+    template = load_prompt_template(version="v1")
+
     assert template.version == "v1"
     assert "CANDIDATE CODES" in template.text
 
@@ -189,7 +199,8 @@ def test_pipeline_returns_verified_outcome(session: Session, note_text: str) -> 
     # Clause text is resolved from the retrieved policy.
     assert recommendation.cited_clauses[0].clause_number == 3
     assert "neurologic findings" in recommendation.cited_clauses[0].clause_text
-    assert outcome.prompt_template_version == "validation_v1"
+    assert recommendation.has_coverage_basis
+    assert outcome.prompt_template_version == "validation_v2"
     assert outcome.model_name == "claude-sonnet-5"
 
 
@@ -202,7 +213,7 @@ def test_pipeline_persists_to_audit_store(session: Session, note_text: str) -> N
 
     stored = session.get(Recommendation, recommendation_id)
     assert stored is not None
-    assert stored.prompt_template_version == "validation_v1"
+    assert stored.prompt_template_version == "validation_v2"
     assert stored.model_name == "claude-sonnet-5"
     assert (
         stored.input_reference
@@ -413,9 +424,11 @@ def test_invalid_clause_dropped_but_code_survives_on_valid_clause(
     assert any("clause 99" in r for r in outcome.verified.rejections)
 
 
-def test_code_with_only_invalid_clause_is_dropped(
+def test_code_with_only_invalid_clause_survives_without_coverage_basis(
     session: Session, note_text: str
 ) -> None:
+    # Coverage decoupling: the invalid citation is dropped and recorded, but
+    # the documentation-supported code survives, explicitly flagged.
     output = _make_valid_output()
     output["code_recommendations"][0]["cited_policy_clauses"] = [
         {"policy_identifier": "SYN-LUMBAR-MRI-001", "clause_number": 99}
@@ -423,11 +436,14 @@ def test_code_with_only_invalid_clause_is_dropped(
 
     outcome, stub = _run(session, note_text, output)
 
-    assert len(outcome.verified.code_recommendations) == 0
+    assert len(outcome.verified.code_recommendations) == 1
+    recommendation = outcome.verified.code_recommendations[0]
+    assert recommendation.cited_clauses == []
+    assert not recommendation.has_coverage_basis
     assert any("clause 99" in r for r in outcome.verified.rejections)
 
 
-def test_cited_policy_not_in_retrieved_set_is_dropped(
+def test_cited_policy_not_in_retrieved_set_survives_without_coverage_basis(
     session: Session, note_text: str
 ) -> None:
     output = _make_valid_output()
@@ -437,8 +453,32 @@ def test_cited_policy_not_in_retrieved_set_is_dropped(
 
     outcome, stub = _run(session, note_text, output)
 
-    assert len(outcome.verified.code_recommendations) == 0
+    assert len(outcome.verified.code_recommendations) == 1
+    assert not outcome.verified.code_recommendations[0].has_coverage_basis
     assert any("SYN-DOES-NOT-EXIST" in r for r in outcome.verified.rejections)
+
+
+def test_code_with_empty_clauses_survives_flagged_and_persists(
+    session: Session, note_text: str
+) -> None:
+    # The model may legitimately return no clauses when none applies (prompt
+    # v2 rule 3). The code survives flagged and the flag reaches the audit
+    # record.
+    output = _make_valid_output()
+    output["code_recommendations"][0]["cited_policy_clauses"] = []
+
+    outcome, stub = _run(session, note_text, output)
+    recommendation_id = persist_validation(
+        session, _make_request(note_text), outcome, FIXED_CREATED_AT
+    )
+
+    assert len(outcome.verified.code_recommendations) == 1
+    assert not outcome.verified.code_recommendations[0].has_coverage_basis
+    import json
+
+    stored = session.get(Recommendation, recommendation_id)
+    stored_codes = json.loads(stored.recommended_codes_json)
+    assert stored_codes[0]["has_coverage_basis"] is False
 
 
 def test_unconditional_documentation_gap_is_dropped(
@@ -520,6 +560,58 @@ def test_phi_in_note_blocks_before_model_and_retrieval(
     # The model was never called and nothing was persisted.
     assert len(stub.calls) == 0
     assert session.query(Recommendation).count() == 0
+
+
+# --- service-to-policy matching ----------------------------------------------
+
+
+def test_service_without_applicable_policy_refuses_before_model_call(
+    session: Session, note_text: str
+) -> None:
+    # Medicare's only seeded policy governs lumbar MRI. Requesting an ESI
+    # must refuse before any model call, naming the services that ARE loaded,
+    # instead of validating against the inapplicable MRI policy.
+    stub = StubModelClient(_make_valid_output())
+    template = load_prompt_template()
+    request = ValidationRequest(
+        note_text=note_text,
+        input_reference=content_reference(note_text),
+        requested_service="lumbar epidural steroid injection",
+        date_of_service=datetime.date(2026, 6, 1),
+        payer_name="Medicare",
+    )
+
+    with pytest.raises(NoApplicablePolicyError) as exc_info:
+        run_validation(session, stub, request, template)
+
+    assert len(stub.calls) == 0  # the model was never called
+    assert "Lumbar MRI" in str(exc_info.value)  # available services are named
+    assert session.query(Recommendation).count() == 0
+
+
+def test_matching_service_reaches_the_model(session: Session, note_text: str) -> None:
+    # The commercial payer's ESI policy matches an ESI request, so validation
+    # proceeds and only the matching policy is sent to the model.
+    output = _make_valid_output()
+    output["code_recommendations"][0]["cited_policy_clauses"] = [
+        {"policy_identifier": "SYN-LUMBAR-ESI-001", "clause_number": 1}
+    ]
+    stub = StubModelClient(output)
+    template = load_prompt_template()
+    request = ValidationRequest(
+        note_text=note_text,
+        input_reference=content_reference(note_text),
+        requested_service="lumbar epidural steroid injection",
+        date_of_service=datetime.date(2026, 6, 1),
+        payer_name="National Commercial Payer A",
+    )
+
+    outcome = run_validation(session, stub, request, template)
+
+    sent = stub.calls[0]["user_content"]
+    assert "SYN-LUMBAR-ESI-001" in sent
+    assert "SYN-LUMBAR-MRI-001" not in sent
+    assert outcome.verified.code_recommendations[0].has_coverage_basis
 
 
 # --- fail loudly on missing retrieval data ----------------------------------

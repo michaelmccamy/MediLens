@@ -18,11 +18,17 @@ from pathlib import Path
 
 from medilens.client.anthropic_client import ModelClient
 from medilens.config import Settings, load_settings
-from medilens.db.session import build_engine, build_session_factory, create_all_tables
+from medilens.db.session import (
+    build_engine,
+    build_session_factory,
+    create_all_tables,
+    upgrade_schema,
+)
 from medilens.ingestion import run_ingestion
 from medilens.notes.ingest import load_note_text_from_path
 from medilens.phi.screening import PhiDetectedError
 from medilens.reasoning.pipeline import (
+    NoApplicablePolicyError,
     ValidationOutcome,
     ValidationRequest,
     content_reference,
@@ -88,6 +94,7 @@ def run_ingest_command(settings: Settings, args: argparse.Namespace) -> None:
     """Load the curated seeds into the configured database."""
     engine = build_engine(settings)
     create_all_tables(engine)
+    upgrade_schema(engine)
     session_factory = build_session_factory(engine)
 
     # A real record-creation timestamp: this marks when the data was ingested,
@@ -128,6 +135,10 @@ def run_validate_command(settings: Settings, args: argparse.Namespace) -> None:
             # The note was refused before anything reached the model. Exit
             # non-zero without printing the note content.
             raise SystemExit(f"refused: {error}") from error
+        except NoApplicablePolicyError as error:
+            # No loaded policy governs this payer + service; refused before
+            # any model call rather than validated against the wrong policy.
+            raise SystemExit(f"refused: {error}") from error
         created_at = datetime.datetime.now(datetime.timezone.utc)
         recommendation_id = persist_validation(session, request, outcome, created_at)
 
@@ -165,6 +176,12 @@ def _print_outcome(outcome: ValidationOutcome, recommendation_id: int) -> None:
             print(
                 f"  policy clause: {clause.policy_identifier} #{clause.clause_number}: "
                 f"{clause.clause_text}"
+            )
+        if not recommendation.has_coverage_basis:
+            print(
+                "  coverage: NO coverage basis cited from the applicable "
+                "policy. This code is documentation-supported only; review "
+                "the payer policy manually before relying on it for coverage."
             )
         print()
 

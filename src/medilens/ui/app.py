@@ -31,6 +31,7 @@ from medilens.notes.ingest import (
     normalize_note_text,
 )
 from medilens.phi.screening import PhiDetectedError
+from medilens.reasoning.pipeline import NoApplicablePolicyError
 from medilens.reasoning.verification import GroundingError
 from medilens.ui.recommendation_view import (
     RecommendationView,
@@ -194,11 +195,18 @@ def _render_recommendation(recommendation: RecommendationView) -> None:
                     "illustrative span, not located in the current note text"
                 )
 
-        st.markdown("Cited policy clauses:")
-        for clause in suggestion.cited_policy_clauses:
-            st.markdown(
-                f"- {clause.policy_identifier}, clause {clause.clause_number}: "
-                f"{clause.clause_text}"
+        if suggestion.has_coverage_basis:
+            st.markdown("Cited policy clauses:")
+            for clause in suggestion.cited_policy_clauses:
+                st.markdown(
+                    f"- {clause.policy_identifier}, clause {clause.clause_number}: "
+                    f"{clause.clause_text}"
+                )
+        else:
+            st.warning(
+                "No coverage basis: this code is supported by the note text, "
+                "but no clause from the applicable payer policy was cited for "
+                "it. Coverage is unconfirmed; review the payer policy manually."
             )
         st.divider()
 
@@ -310,6 +318,11 @@ def main() -> None:
     except PhiDetectedError as error:
         # The note was refused before it reached the model. Show the category
         # summary (which carries no values) and stop.
+        st.error(str(error))
+        return
+    except NoApplicablePolicyError as error:
+        # No loaded policy governs this payer + service. Refused before any
+        # model call; the message names which services are loaded.
         st.error(str(error))
         return
     except GroundingError as error:

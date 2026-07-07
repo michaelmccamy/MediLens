@@ -23,6 +23,8 @@ from medilens.policy.ingest import (
 from medilens.policy.retrieval import (
     find_policy_at_date,
     list_policies_for_payer_at_date,
+    list_policies_for_service_at_date,
+    service_matches,
 )
 
 SEED_PATH = (
@@ -46,11 +48,15 @@ def _make_policy(
     policy_text: str = "Service: Lumbar MRI\n\nDocumentation criteria:\n1. Example.",
     effective_start: datetime.date = datetime.date(2025, 1, 1),
     effective_end: datetime.date | None = None,
+    service: str = "Lumbar MRI (advanced imaging of the lumbar spine)",
+    service_keywords: str = "lumbar mri,mri",
 ) -> ParsedPolicy:
     return ParsedPolicy(
         payer_name=payer_name,
         policy_identifier=policy_identifier,
         specialty="Orthopedics and pain medicine",
+        service=service,
+        service_keywords=service_keywords,
         policy_text=policy_text,
         effective_start=effective_start,
         effective_end=effective_end,
@@ -97,14 +103,44 @@ def test_parse_seed_file_rejects_empty_criteria(tmp_path: Path) -> None:
         "  - payer_name: P\n"
         "    policy_identifier: ID\n"
         "    service: S\n"
+        "    service_keywords: [s]\n"
         "    source: src\n"
         "    effective_start: 2025-01-01\n"
         "    criteria: []\n",
         encoding="utf-8",
     )
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="criteria"):
         parse_policy_seed_file(bad_file)
+
+
+def test_parse_seed_file_requires_service_keywords(tmp_path: Path) -> None:
+    bad_file = tmp_path / "no_keywords.yaml"
+    bad_file.write_text(
+        "specialty: X\n"
+        "policies:\n"
+        "  - payer_name: P\n"
+        "    policy_identifier: ID\n"
+        "    service: S\n"
+        "    source: src\n"
+        "    effective_start: 2025-01-01\n"
+        "    criteria: [\"If clinically accurate, document X.\"]\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="service_keywords"):
+        parse_policy_seed_file(bad_file)
+
+
+def test_parse_seed_file_populates_service_fields() -> None:
+    policies = parse_policy_seed_file(SEED_PATH)
+
+    for policy in policies:
+        assert policy.service != ""
+        assert policy.service_keywords != ""
+    keyword_sets = {policy.policy_identifier: policy.service_keywords for policy in policies}
+    assert "mri" in keyword_sets["SYN-LUMBAR-MRI-001"]
+    assert "epidural" in keyword_sets["SYN-LUMBAR-ESI-001"]
 
 
 # --- hashing -------------------------------------------------------------
@@ -128,6 +164,13 @@ def test_policy_hash_changes_when_effective_end_set() -> None:
     retired = _make_policy(effective_end=datetime.date(2025, 12, 31))
 
     assert compute_policy_hash(active) != compute_policy_hash(retired)
+
+
+def test_policy_hash_changes_when_service_changes() -> None:
+    mri = _make_policy(service="Lumbar MRI", service_keywords="mri")
+    esi = _make_policy(service="Lumbar ESI", service_keywords="esi")
+
+    assert compute_policy_hash(mri) != compute_policy_hash(esi)
 
 
 # --- ingestion -----------------------------------------------------------
@@ -228,6 +271,59 @@ def test_list_policies_filters_by_payer_and_specialty(session: Session) -> None:
     returned_ids = {policy.policy_identifier for policy in medicare_policies}
     assert "SYN-A" in returned_ids
     assert "SYN-B" not in returned_ids
+
+
+# --- service matching --------------------------------------------------------
+
+
+def test_service_matches_simple_keyword() -> None:
+    assert service_matches("lumbar MRI", "lumbar mri,mri")
+    assert service_matches("MRI of the lumbar spine", "lumbar mri,mri")
+
+
+def test_service_matches_multiword_keyword_requires_all_tokens() -> None:
+    keywords = "epidural steroid injection,esi,epidural"
+    assert service_matches("lumbar epidural steroid injection", keywords)
+    # A more specific request than the policy label still matches via a keyword.
+    assert service_matches(
+        "left L4-L5 transforaminal epidural steroid injection", keywords
+    )
+
+
+def test_service_does_not_match_unrelated_request() -> None:
+    assert not service_matches("lumbar MRI", "epidural steroid injection,esi,epidural")
+    assert not service_matches("knee arthroscopy", "lumbar mri,mri")
+
+
+def test_service_never_matches_empty_keywords_or_request() -> None:
+    # Legacy rows (pre-service-matching) have empty keywords: never matched.
+    assert not service_matches("lumbar MRI", "")
+    assert not service_matches("", "mri")
+
+
+def test_list_policies_for_service_filters_by_service(session: Session) -> None:
+    mri = _make_policy(
+        policy_identifier="SYN-A",
+        service="Lumbar MRI",
+        service_keywords="lumbar mri,mri",
+    )
+    esi = _make_policy(
+        policy_identifier="SYN-B",
+        service="Lumbar epidural steroid injection",
+        service_keywords="epidural steroid injection,esi,epidural",
+    )
+    ingest_policies(session, [mri, esi], FIXED_RETRIEVED_AT)
+
+    matching = list_policies_for_service_at_date(
+        session,
+        "Medicare",
+        "Orthopedics and pain medicine",
+        "lumbar epidural steroid injection",
+        datetime.date(2026, 6, 1),
+    )
+
+    returned_ids = {policy.policy_identifier for policy in matching}
+    assert returned_ids == {"SYN-B"}
 
 
 def test_list_policies_excludes_out_of_force(session: Session) -> None:

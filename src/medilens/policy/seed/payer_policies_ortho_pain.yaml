@@ -29,6 +29,13 @@ policies:
     effective_start: 2025-01-01
     effective_end: null
     service: "Lumbar MRI (advanced imaging of the lumbar spine)"
+    # Curated matching phrases: a requested service matches this policy when
+    # every word of any one phrase appears in the request. Keep phrases
+    # lowercase and specific enough not to match unrelated services.
+    service_keywords:
+      - "lumbar mri"
+      - "mri"
+      - "magnetic resonance imaging"
     source: "SYNTHETIC illustrative policy for development. Paraphrases public LCD/NCD coverage concepts; not authoritative."
     criteria:
       - "Documentation supports low back or radicular symptoms with a duration of at least 6 weeks, unless a red-flag indication below is present."
@@ -42,6 +49,11 @@ policies:
     effective_start: 2025-01-01
     effective_end: null
     service: "Lumbar epidural steroid injection"
+    service_keywords:
+      - "epidural steroid injection"
+      - "epidural injection"
+      - "esi"
+      - "epidural"
     source: "SYNTHETIC placeholder policy for development. Not based on any specific commercial payer's proprietary policy text."
     criteria:
       - "Documentation supports radicular pain (radiculopathy or sciatica) correlating with an imaging or examination finding at the treated level."

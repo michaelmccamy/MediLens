@@ -65,6 +65,9 @@ class CodeSuggestion:
     rationale: str
     supporting_note_spans: list[NoteSpan] = field(default_factory=list)
     cited_policy_clauses: list[PolicyClauseCitation] = field(default_factory=list)
+    # False means documentation-supported only: no clause from the applicable
+    # payer policy was (validly) cited, so coverage is unconfirmed.
+    has_coverage_basis: bool = True
 
 
 @dataclass
@@ -132,6 +135,7 @@ def view_from_outcome(
                 rationale=recommendation.rationale,
                 supporting_note_spans=spans,
                 cited_policy_clauses=clauses,
+                has_coverage_basis=recommendation.has_coverage_basis,
             )
         )
 

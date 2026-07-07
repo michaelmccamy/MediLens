@@ -35,12 +35,16 @@ class ParsedPolicy:
     """One payer-policy record parsed from a seed file, before the DB.
 
     Frozen because a parsed record is a value: the ingester hashes and writes
-    it without altering it.
+    it without altering it. service is the human-readable label of the service
+    the policy governs; service_keywords is the curated comma-joined lowercase
+    keyword list retrieval uses to match a requested service to this policy.
     """
 
     payer_name: str
     policy_identifier: str
     specialty: str
+    service: str
+    service_keywords: str
     policy_text: str
     effective_start: datetime.date
     effective_end: datetime.date | None
@@ -62,6 +66,8 @@ def compute_policy_hash(policy: ParsedPolicy) -> str:
         policy.payer_name,
         policy.policy_identifier,
         policy.specialty,
+        policy.service,
+        policy.service_keywords,
         policy.policy_text,
         policy.effective_start.isoformat(),
         effective_end_text,
@@ -142,6 +148,17 @@ def parse_policy_seed_file(seed_path: Path) -> list[ParsedPolicy]:
         payer_name = _require_key(policy_row, "payer_name", context)
         policy_identifier = _require_key(policy_row, "policy_identifier", context)
         service = _require_key(policy_row, "service", context)
+        raw_keywords = _require_key(policy_row, "service_keywords", context)
+        if not isinstance(raw_keywords, list) or len(raw_keywords) == 0:
+            raise ValueError(
+                f"policy seed file {context} policy {policy_identifier!r} "
+                "must have a non-empty 'service_keywords' list; retrieval "
+                "cannot match a policy to a requested service without them"
+            )
+        keyword_phrases: list[str] = []
+        for keyword in raw_keywords:
+            keyword_phrases.append(str(keyword).strip().lower())
+        service_keywords = ",".join(keyword_phrases)
         source = _require_key(policy_row, "source", context)
         effective_start = _coerce_date(
             _require_key(policy_row, "effective_start", context), context
@@ -161,6 +178,8 @@ def parse_policy_seed_file(seed_path: Path) -> list[ParsedPolicy]:
             payer_name=payer_name,
             policy_identifier=policy_identifier,
             specialty=specialty,
+            service=service,
+            service_keywords=service_keywords,
             policy_text=policy_text,
             effective_start=effective_start,
             effective_end=effective_end,
@@ -201,6 +220,8 @@ def ingest_policies(
             payer_name=policy.payer_name,
             policy_identifier=policy.policy_identifier,
             specialty=policy.specialty,
+            service=policy.service,
+            service_keywords=policy.service_keywords,
             policy_text=policy.policy_text,
             effective_start=policy.effective_start,
             effective_end=policy.effective_end,
