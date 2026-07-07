@@ -109,19 +109,24 @@ def write_recommendation(
 
 
 def _reject_ungrounded(record: RecommendationRecord) -> None:
-    """Fail loudly if a recommendation lacks note-span or policy citations.
+    """Fail loudly if recommended codes lack note-span or policy citations.
 
-    CLAUDE.md guardrail 4 forbids freeform code guessing: every recommendation
-    must cite the supporting note span and the policy clause used. Storing an
-    ungrounded recommendation would defeat the audit trail, so it is an error.
+    CLAUDE.md guardrail 4 forbids freeform code guessing: every recommended
+    code must cite the supporting note span and the policy clause used. A
+    record with NO recommended codes is legitimate and storable; "the note
+    does not support a code" is itself an auditable finding (guardrail 4 says
+    to say so rather than infer). What must never be stored is a code without
+    its grounding.
     """
+    if not record.recommended_codes:
+        return
     if not record.cited_note_spans:
         raise ValueError(
-            "recommendation has no cited note spans; guardrail 4 requires a "
-            "supporting note span for every recommendation"
+            "recommendation has codes but no cited note spans; guardrail 4 "
+            "requires a supporting note span for every recommended code"
         )
     if not record.cited_policy_clauses:
         raise ValueError(
-            "recommendation has no cited policy clauses; guardrail 4 requires "
-            "the specific policy clause used for every recommendation"
+            "recommendation has codes but no cited policy clauses; guardrail 4 "
+            "requires the specific policy clause used for every recommended code"
         )

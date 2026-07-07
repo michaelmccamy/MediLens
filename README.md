@@ -44,8 +44,11 @@ model endpoint or storing anything that could be PHI.
 
    This creates the tables if needed and is idempotent (re-running writes only changed records).
 
-7. Run the validate command (currently a scaffold; extraction, retrieval, and reasoning layers
-   are not yet implemented):
+7. Run the validate command. It retrieves the codes and payer policies in force on the date of
+   service, calls the model with a versioned prompt template, verifies every citation against
+   the note (fabricated spans, codes outside the candidate set, and nonexistent policy clauses
+   are all rejected), prints the recommendation, and writes it to the append-only audit store.
+   Requires ANTHROPIC_API_KEY and an ingested database:
 
    ```
    uv run medilens validate tests/fixtures/synthetic_notes/lumbar_mri_example.txt --requested-service "lumbar MRI" --date-of-service 2026-06-01 --payer Medicare
@@ -78,7 +81,14 @@ model endpoint or storing anything that could be PHI.
   Ships a curated, synthetic ortho/pain policy seed (`seed/`) with numbered, citable criteria,
   an idempotent versioned ingester, and retrieval scoped by payer and specialty at the date of
   service. The seed criteria are synthetic development data, not authoritative payer text.
-- `src/medilens/reasoning/`: fact extraction, code matching, gap analysis. Not yet built.
+- `src/medilens/reasoning/`: the reasoning pipeline. Loads a versioned prompt template
+  (`src/medilens/prompts/`), feeds the model the note plus date-resolved candidate codes and
+  payer policies, and mechanically verifies the output before anything is shown or stored:
+  every cited span must appear verbatim in the note, every code must be in the retrieved
+  candidate set, every cited clause must exist in the retrieved policy, and every code needs
+  located documentation support. Violations fail loudly and nothing is persisted.
+- `src/medilens/prompts/`: versioned prompt template files. The version is recorded in every
+  audit record.
 - `src/medilens/db/`: SQLAlchemy models and session setup for non-PHI operational data.
 - `src/medilens/prompts/`: versioned prompt templates.
 - `src/medilens/hashing.py`: shared content-hash primitive for change detection across ingesters.

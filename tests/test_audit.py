@@ -102,6 +102,17 @@ def test_writes_are_append_only(session: Session) -> None:
     assert session.query(Recommendation).count() == 2
 
 
+def test_record_with_no_codes_and_no_citations_is_storable(session: Session) -> None:
+    # "The note does not support a code" is an honest, auditable finding
+    # (guardrail 4); only codes WITHOUT citations are refused.
+    record = _make_record(cited_note_spans=[], cited_policy_clauses=[])
+    record.recommended_codes = []
+
+    recommendation_id = write_recommendation(session, record, FIXED_CREATED_AT)
+
+    assert session.get(Recommendation, recommendation_id) is not None
+
+
 def test_rejects_recommendation_without_note_spans(session: Session) -> None:
     record = _make_record(cited_note_spans=[])
 

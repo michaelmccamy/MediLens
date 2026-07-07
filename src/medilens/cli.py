@@ -3,22 +3,29 @@
 Two subcommands:
 
 - ingest: load the curated code-set and payer-policy seeds into the database.
-- validate: take a synthetic clinical note plus request metadata and (once the
-  reasoning layer exists) print a coding recommendation with citations and a
-  denial-risk score. Today it is a stub that validates configuration and
-  arguments so the command shape is settled before that logic is built.
+- validate: take a synthetic clinical note plus request metadata, run the
+  reasoning pipeline (retrieve date-correct codes and policies, call the
+  model, verify grounding), print the recommendation with citations and a
+  denial-risk score, and write it to the append-only audit store.
 
 The CLI stays thin: it parses arguments, loads settings, and delegates to the
-orchestration and ingestion modules.
+orchestration, ingestion, and reasoning modules.
 """
 
 import argparse
 import datetime
-import sys
 
+from medilens.client.anthropic_client import ModelClient
 from medilens.config import Settings, load_settings
 from medilens.db.session import build_engine, build_session_factory, create_all_tables
 from medilens.ingestion import run_ingestion
+from medilens.reasoning.pipeline import (
+    ValidationOutcome,
+    ValidationRequest,
+    persist_validation,
+    run_validation,
+)
+from medilens.reasoning.prompts import load_prompt_template
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
@@ -36,7 +43,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
     validate_parser = subparsers.add_parser(
         "validate",
-        help="Check a synthetic note for documentation sufficiency (stub).",
+        help="Check a synthetic note for documentation sufficiency.",
     )
     validate_parser.add_argument(
         "note_path",
@@ -92,22 +99,78 @@ def run_ingest_command(settings: Settings, args: argparse.Namespace) -> None:
 
 
 def run_validate_command(settings: Settings, args: argparse.Namespace) -> None:
-    """Stub: the extraction, retrieval, and reasoning layers are not wired yet."""
+    """Run the reasoning pipeline on one note and print the verified result."""
     date_of_service = parse_date_of_service(args.date_of_service)
 
     with open(args.note_path, "r", encoding="utf-8") as note_file:
         note_text = note_file.read()
 
-    print(
-        "medilens validate is scaffolded but the extraction, retrieval, and "
-        "reasoning layers are not implemented yet.",
-        file=sys.stderr,
+    request = ValidationRequest(
+        note_text=note_text,
+        input_reference=args.note_path,
+        requested_service=args.requested_service,
+        date_of_service=date_of_service,
+        payer_name=args.payer,
     )
-    print(f"model: {settings.model_name}")
-    print(f"requested_service: {args.requested_service}")
-    print(f"date_of_service: {date_of_service.isoformat()}")
-    print(f"payer: {args.payer}")
-    print(f"note_length_chars: {len(note_text)}")
+    prompt_template = load_prompt_template()
+    model_client = ModelClient(settings)
+
+    engine = build_engine(settings)
+    session_factory = build_session_factory(engine)
+    with session_factory() as session:
+        outcome = run_validation(session, model_client, request, prompt_template)
+        created_at = datetime.datetime.now(datetime.timezone.utc)
+        recommendation_id = persist_validation(session, request, outcome, created_at)
+
+    _print_outcome(outcome, recommendation_id)
+
+
+def _print_outcome(outcome: ValidationOutcome, recommendation_id: int) -> None:
+    """Render a verified validation for the terminal.
+
+    The honesty note and review framing are required on every output surface
+    (CLAUDE.md guardrail 8 and guardrail 3), the CLI included.
+    """
+    print(
+        "NOTE: This suggestion is based only on documentation currently "
+        "present in the note. Do not add documentation unless it is "
+        "clinically accurate. Every code below is a recommendation for a "
+        "certified coder or provider to review, not a final coding decision."
+    )
+    print()
+
+    verified = outcome.verified
+    if len(verified.code_recommendations) == 0:
+        print("No supported codes found in the documentation.")
+    for recommendation in verified.code_recommendations:
+        print(
+            f"code: {recommendation.code} ({recommendation.code_system}) "
+            f"{recommendation.description}"
+        )
+        print(f"  rationale: {recommendation.rationale}")
+        for span in recommendation.supporting_spans:
+            print(
+                f'  note span [{span.start_offset}:{span.end_offset}]: "{span.text}"'
+            )
+        for clause in recommendation.cited_clauses:
+            print(
+                f"  policy clause: {clause.policy_identifier} #{clause.clause_number}: "
+                f"{clause.clause_text}"
+            )
+        print()
+
+    if len(verified.documentation_gaps) > 0:
+        print("documentation gaps:")
+        for gap in verified.documentation_gaps:
+            print(f"  - {gap}")
+        print()
+
+    print(f"denial_risk_score: {verified.denial_risk_score:.2f}")
+    print(f"denial_risk_rationale: {verified.denial_risk_rationale}")
+    print()
+    print(f"model: {outcome.model_name}")
+    print(f"prompt_template_version: {outcome.prompt_template_version}")
+    print(f"audit_recommendation_id: {recommendation_id}")
 
 
 def main() -> None:
