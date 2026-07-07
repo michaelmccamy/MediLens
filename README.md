@@ -89,6 +89,13 @@ model endpoint or storing anything that could be PHI.
   located documentation support. Violations fail loudly and nothing is persisted.
 - `src/medilens/prompts/`: versioned prompt template files. The version is recorded in every
   audit record.
+- `src/medilens/notes/`: note ingestion. Reads .txt/.md/.rtf, normalizes unicode punctuation,
+  line endings, and whitespace at the boundary so grounding offsets are consistent. The UI
+  accepts file uploads through this layer.
+- `src/medilens/phi/`: PHI screening gate. Refuses notes carrying high-confidence identifiers
+  (SSN, email, phone, IP) before any text reaches the model, since this deployment is not
+  BAA covered. A screening safety-net, not a compliant de-identifier (free-text names are not
+  reliably caught).
 - `src/medilens/db/`: SQLAlchemy models and session setup for non-PHI operational data.
 - `src/medilens/prompts/`: versioned prompt templates.
 - `src/medilens/hashing.py`: shared content-hash primitive for change detection across ingesters.

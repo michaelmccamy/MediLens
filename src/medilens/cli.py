@@ -14,11 +14,13 @@ orchestration, ingestion, and reasoning modules.
 
 import argparse
 import datetime
+from pathlib import Path
 
 from medilens.client.anthropic_client import ModelClient
 from medilens.config import Settings, load_settings
 from medilens.db.session import build_engine, build_session_factory, create_all_tables
 from medilens.ingestion import run_ingestion
+from medilens.notes.ingest import load_note_text_from_path
 from medilens.phi.screening import PhiDetectedError
 from medilens.reasoning.pipeline import (
     ValidationOutcome,
@@ -104,8 +106,7 @@ def run_validate_command(settings: Settings, args: argparse.Namespace) -> None:
     """Run the reasoning pipeline on one note and print the verified result."""
     date_of_service = parse_date_of_service(args.date_of_service)
 
-    with open(args.note_path, "r", encoding="utf-8") as note_file:
-        note_text = note_file.read()
+    note_text = load_note_text_from_path(Path(args.note_path))
 
     request = ValidationRequest(
         note_text=note_text,

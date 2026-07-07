@@ -623,6 +623,7 @@ dependencies = [
     { name = "python-dotenv" },
     { name = "pyyaml" },
     { name = "sqlalchemy" },
+    { name = "striprtf" },
 ]
 
 [package.optional-dependencies]
@@ -645,6 +646,7 @@ requires-dist = [
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.6" },
     { name = "sqlalchemy", specifier = ">=2.0" },
     { name = "streamlit", marker = "extra == 'ui'", specifier = ">=1.30" },
+    { name = "striprtf", specifier = ">=0.0.26" },
 ]
 provides-extras = ["dev", "ui"]
 
@@ -1638,6 +1640,15 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/90/b8/e13c137c299b47f683fe6d4e198075f37a2c7666c9b96010070d58c2037c/streamlit-1.59.0.tar.gz", hash = "sha256:aaa9616f75421cd7cb8c9de8940b2b7edfe266a9d81e78195252d88fd2b00a75", size = 9760463, upload-time = "2026-07-06T15:28:10.943Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/d4/6d/4ea54c377fb208e6a430c40a8dd6b271e5ea8f2191079875731ef88ec3c7/streamlit-1.59.0-py3-none-any.whl", hash = "sha256:d3e3c30caf0915e994b2b263418b28aa05ee5ba90f39e0a59b4c8021dd435d4c", size = 10329987, upload-time = "2026-07-06T15:28:07.753Z" },
+]
+
+[[package]]
+name = "striprtf"
+version = "0.0.32"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/86/f9/b3ecbd2e0abb9c29edd2913482f0c5df47a098221444ccd50cc5cd3f9b91/striprtf-0.0.32.tar.gz", hash = "sha256:7f375a375d99a2700842173168c90c9b545cb244241ffc5d868ed9f6baf9155f", size = 7571, upload-time = "2026-04-27T15:42:37.15Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/c3/cf/4157959aa36a567faab32a5fb078904b76654bdd86a3d7f8fba21ed89d84/striprtf-0.0.32-py3-none-any.whl", hash = "sha256:9f695fea9662cb4ffccf2b56286b3e77028c0a61e87258719584e681e0144869", size = 8044, upload-time = "2026-04-27T15:42:35.948Z" },
 ]
 
 [[package]]

@@ -26,6 +26,10 @@ from pathlib import Path
 
 import streamlit as st
 
+from medilens.notes.ingest import (
+    load_and_normalize_upload,
+    normalize_note_text,
+)
 from medilens.phi.screening import PhiDetectedError
 from medilens.reasoning.verification import GroundingError
 from medilens.ui.recommendation_view import (
@@ -237,10 +241,19 @@ def main() -> None:
     _render_honesty_notes()
 
     with st.form("review_request"):
+        uploaded_file = st.file_uploader(
+            "Upload a note (.txt, .md, or .rtf), or paste one below",
+            type=["txt", "md", "rtf"],
+        )
         note_text = st.text_area(
             "Clinical note (synthetic, de-identified only)",
             value=_load_default_note(),
             height=300,
+        )
+        st.caption(
+            "If a file is uploaded, it is used instead of the pasted text. "
+            "Notes are normalized (unicode, whitespace, line endings) before "
+            "analysis. Uploaded files are screened for PHI like any other note."
         )
         requested_service = st.text_input(
             "Requested service", value="lumbar MRI"
@@ -253,6 +266,19 @@ def main() -> None:
 
     if not submitted:
         return
+
+    # An uploaded file takes precedence over the pasted text. Both paths are
+    # normalized so downstream offsets are consistent.
+    if uploaded_file is not None:
+        try:
+            note_text = load_and_normalize_upload(
+                uploaded_file.name, uploaded_file.getvalue()
+            )
+        except ValueError as error:
+            st.error(str(error))
+            return
+    else:
+        note_text = normalize_note_text(note_text)
 
     if settings is None:
         recommendation = build_sample_recommendation(

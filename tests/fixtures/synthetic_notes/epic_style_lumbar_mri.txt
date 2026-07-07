@@ -1,0 +1,53 @@
+SYNTHETIC NOTE. Not a real patient. Structure imitates an EHR export for
+testing note ingestion and normalization. No real PHI. Contains a synthetic
+MRN and DOB label only to exercise the (non-blocking) medium PHI findings.
+
+======================================================================
+Springfield Orthopedic & Spine Associates
+Office Visit Note - Established Patient
+======================================================================
+Patient: Testcase, Jane (SYNTHETIC)        MRN: SYN000123
+DOB: 01/01/1975                            Sex: F
+Encounter Date: 06/01/2026                 Provider: A. Clinician, MD
+Department: Pain Medicine
+----------------------------------------------------------------------
+
+Chief Complaint:
+Low back pain radiating to the left leg.
+
+HPI:
+Ms. Testcase is a 51 y/o established patient who presents with an 8-week
+history of low back pain radiating into the left posterior thigh and calf.
+The pain is described as sharp and burning, worse with prolonged sitting
+and forward flexion, and partially relieved by rest. She denies saddle
+anesthesia, bowel or bladder incontinence, fever, chills, or unexplained
+weight loss.
+
+Conservative Care to Date:
+- Physical therapy: completed 6 weeks, minimal improvement.
+- Medications: naproxen with partial relief.
+- Injections: none to date.
+
+Review of Systems:
+Constitutional: Negative for fever, negative for weight loss.
+Neurologic: Positive for left leg radicular pain. Negative for saddle
+anesthesia.
+All other systems reviewed and negative.
+
+Physical Exam:
+Vitals: BP 128/78, HR 72, Temp 98.4 F.
+Back: Paraspinal tenderness, left lumbar region.
+Neuro: Positive straight leg raise on the left at 40 degrees. Diminished
+sensation in the left L5 dermatome. Strength 4/5 left extensor hallucis
+longus. Reflexes 2+ and symmetric.
+
+Assessment:
+Lumbar radiculopathy, left L5 distribution, persistent despite 6 weeks of
+conservative therapy.
+
+Plan:
+Order lumbar MRI without contrast to evaluate for disc herniation or nerve
+root compression given failure of conservative management. Discussed risks,
+benefits, and alternatives with the patient, who wishes to proceed.
+
+Electronically signed by A. Clinician, MD on 06/01/2026.
