@@ -232,6 +232,26 @@ def test_empty_code_recommendations_is_valid_and_persistable(
     assert session.get(Recommendation, recommendation_id) is not None
 
 
+def test_wrapped_line_span_locates_with_true_offsets(
+    session: Session, note_text: str
+) -> None:
+    # The fixture note is hard-wrapped, so this sentence contains a newline:
+    # "...physical therapy with\nminimal improvement". A model citing it with
+    # a single space must still locate, and the stored text must come from
+    # the note itself (including the original line break).
+    wrapped_citation = "Completed 6 weeks of physical therapy with minimal improvement"
+    assert wrapped_citation not in note_text  # sanity: exact match would fail
+    output = _make_valid_output()
+    output["extracted_facts"][1]["note_span"] = wrapped_citation
+
+    outcome, stub = _run(session, note_text, output)
+
+    located = outcome.verified.extracted_facts[1].span
+    assert note_text[located.start_offset : located.end_offset] == located.text
+    assert "\n" in located.text  # the persisted text is the note's own wrapping
+    assert located.text.replace("\n", " ") == wrapped_citation
+
+
 # --- regression checks (CLAUDE.md section 8) --------------------------------
 
 

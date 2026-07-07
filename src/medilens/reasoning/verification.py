@@ -83,24 +83,73 @@ class VerifiedValidation:
     denial_risk_rationale: str
 
 
-def _locate_span(note_text: str, span_text: str, field_name: str) -> LocatedSpan:
-    """Find a cited span verbatim in the note or reject the output.
+def _normalize_with_offset_map(text: str) -> tuple[str, list[int]]:
+    """Collapse whitespace runs to single spaces, keeping original offsets.
 
-    Exact substring match is deliberate: a paraphrased span cannot be traced
-    back to the record, which defeats provenance. The error names the field but
-    not the span content (no note text in logs, guardrail 6).
+    Returns the normalized text and a map from each normalized character back
+    to its original index, so a match in normalized space can be translated to
+    exact offsets in the original note.
     """
-    if not span_text:
+    normalized_chars: list[str] = []
+    offset_map: list[int] = []
+    previous_was_space = False
+    for index, character in enumerate(text):
+        if character.isspace():
+            if previous_was_space:
+                continue
+            normalized_chars.append(" ")
+            offset_map.append(index)
+            previous_was_space = True
+        else:
+            normalized_chars.append(character)
+            offset_map.append(index)
+            previous_was_space = False
+    return "".join(normalized_chars), offset_map
+
+
+def _locate_span(note_text: str, span_text: str, field_name: str) -> LocatedSpan:
+    """Find a cited span in the note or reject the output.
+
+    Content characters must match exactly; a paraphrased or altered span
+    cannot be traced back to the record, which defeats provenance. The one
+    tolerated difference is whitespace: clinical notes are often hard-wrapped
+    mid-sentence, so a model citing a wrapped sentence renders the line break
+    as a space. Whitespace runs are treated as equivalent, which is not a
+    fabrication loophole because every non-whitespace character still has to
+    match. The stored span text is taken from the note itself (not the model
+    output), so what is persisted is exactly what the record says.
+
+    The error names the field but not the span content (no note text in logs,
+    guardrail 6).
+    """
+    if not span_text or span_text.isspace():
         raise GroundingError(f"{field_name} is empty; every citation needs text")
+
+    # Fast path: the span appears character for character.
     start_offset = note_text.find(span_text)
-    if start_offset == -1:
+    if start_offset != -1:
+        end_offset = start_offset + len(span_text)
+        return LocatedSpan(
+            text=span_text, start_offset=start_offset, end_offset=end_offset
+        )
+
+    # Whitespace-tolerant path: match with whitespace runs collapsed, then map
+    # back to exact offsets in the original note.
+    normalized_note, offset_map = _normalize_with_offset_map(note_text)
+    normalized_span, _ = _normalize_with_offset_map(span_text.strip())
+    normalized_start = normalized_note.find(normalized_span)
+    if normalized_start == -1:
         raise GroundingError(
             f"{field_name} does not appear verbatim in the note; treating as "
             "fabrication and rejecting the output (guardrail 1)"
         )
-    end_offset = start_offset + len(span_text)
+    normalized_end = normalized_start + len(normalized_span) - 1
+    start_offset = offset_map[normalized_start]
+    end_offset = offset_map[normalized_end] + 1
     return LocatedSpan(
-        text=span_text, start_offset=start_offset, end_offset=end_offset
+        text=note_text[start_offset:end_offset],
+        start_offset=start_offset,
+        end_offset=end_offset,
     )
 
 
