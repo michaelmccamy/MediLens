@@ -29,6 +29,7 @@ from medilens.reasoning.pipeline import (
     persist_validation,
     run_validation,
 )
+from medilens.phi.screening import PhiDetectedError
 from medilens.reasoning.prompts import build_user_content, load_prompt_template
 from medilens.reasoning.verification import GroundingError
 
@@ -407,6 +408,32 @@ def test_denial_risk_score_out_of_bounds_is_rejected(
 
     with pytest.raises(GroundingError, match="denial_risk_score"):
         _run(session, note_text, output)
+
+
+# --- PHI gate --------------------------------------------------------------
+
+
+def test_phi_in_note_blocks_before_model_and_retrieval(
+    session: Session, note_text: str
+) -> None:
+    # A note carrying a phone number must be refused before anything is sent
+    # to the model, because this deployment is not BAA covered.
+    poisoned_note = note_text + "\nContact patient at 415-555-0132.\n"
+    stub = StubModelClient(_make_valid_output())
+    template = load_prompt_template()
+    request = ValidationRequest(
+        note_text=poisoned_note,
+        input_reference=content_reference(poisoned_note),
+        requested_service="lumbar MRI",
+        date_of_service=datetime.date(2026, 6, 1),
+        payer_name="Medicare",
+    )
+
+    with pytest.raises(PhiDetectedError):
+        run_validation(session, stub, request, template)
+    # The model was never called and nothing was persisted.
+    assert len(stub.calls) == 0
+    assert session.query(Recommendation).count() == 0
 
 
 # --- fail loudly on missing retrieval data ----------------------------------

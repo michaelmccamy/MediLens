@@ -19,6 +19,7 @@ from medilens.client.anthropic_client import ModelClient
 from medilens.config import Settings, load_settings
 from medilens.db.session import build_engine, build_session_factory, create_all_tables
 from medilens.ingestion import run_ingestion
+from medilens.phi.screening import PhiDetectedError
 from medilens.reasoning.pipeline import (
     ValidationOutcome,
     ValidationRequest,
@@ -120,7 +121,12 @@ def run_validate_command(settings: Settings, args: argparse.Namespace) -> None:
     engine = build_engine(settings)
     session_factory = build_session_factory(engine)
     with session_factory() as session:
-        outcome = run_validation(session, model_client, request, prompt_template)
+        try:
+            outcome = run_validation(session, model_client, request, prompt_template)
+        except PhiDetectedError as error:
+            # The note was refused before anything reached the model. Exit
+            # non-zero without printing the note content.
+            raise SystemExit(f"refused: {error}") from error
         created_at = datetime.datetime.now(datetime.timezone.utc)
         recommendation_id = persist_validation(session, request, outcome, created_at)
 

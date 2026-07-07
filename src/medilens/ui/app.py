@@ -26,6 +26,7 @@ from pathlib import Path
 
 import streamlit as st
 
+from medilens.phi.screening import PhiDetectedError
 from medilens.reasoning.verification import GroundingError
 from medilens.ui.recommendation_view import (
     RecommendationView,
@@ -270,6 +271,11 @@ def main() -> None:
             recommendation, recommendation_id = _run_live_validation(
                 settings, note_text, requested_service, date_of_service, payer_name
             )
+    except PhiDetectedError as error:
+        # The note was refused before it reached the model. Show the category
+        # summary (which carries no values) and stop.
+        st.error(str(error))
+        return
     except GroundingError as error:
         # Output that fails a grounding gate is never rendered as a
         # recommendation and nothing was stored (guardrails 1 and 4).

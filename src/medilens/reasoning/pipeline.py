@@ -21,6 +21,7 @@ from sqlalchemy.orm import Session
 
 from medilens.audit.writer import RecommendationRecord, write_recommendation
 from medilens.knowledge.retrieval import list_codes_at_date
+from medilens.phi.screening import assert_no_blocking_phi
 from medilens.policy.retrieval import list_policies_for_payer_at_date
 from medilens.reasoning.prompts import PromptTemplate, build_user_content
 from medilens.reasoning.schema import VALIDATION_OUTPUT_SCHEMA
@@ -93,6 +94,11 @@ def run_validation(
     candidate or policy set would force the model to guess from memory, which
     is exactly what the architecture forbids (sections 4 and 7).
     """
+    # PHI screen first: refuse before any retrieval or model call if the note
+    # carries high-confidence identifiers. This deployment is not BAA covered,
+    # so PHI must never reach the endpoint (CLAUDE.md guardrail 6).
+    assert_no_blocking_phi(request.note_text)
+
     candidate_codes = list_codes_at_date(
         session, BEACHHEAD_CODE_SYSTEM, request.date_of_service
     )
