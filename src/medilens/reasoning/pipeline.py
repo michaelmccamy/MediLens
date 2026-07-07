@@ -14,6 +14,7 @@ pipeline run is deterministic and testable with a stubbed model.
 """
 
 import datetime
+import hashlib
 from dataclasses import dataclass
 
 from sqlalchemy.orm import Session
@@ -38,8 +39,12 @@ BEACHHEAD_SPECIALTY = "Orthopedics and pain medicine"
 class ValidationRequest:
     """One documentation-sufficiency request, as the CLI or a test poses it.
 
-    input_reference is an opaque pointer to the note (a path or id), stored in
-    the audit record instead of the note text (CLAUDE.md section 6).
+    input_reference is a bounded, opaque pointer to the note, stored in the
+    audit record instead of the note text (CLAUDE.md section 6). It must not be
+    a raw file path: paths are unbounded, environment-specific, and can leak
+    identifying information in the filename. Use content_reference to derive
+    one. source_label is a human-readable origin (a path, "pasted in UI") kept
+    for traceability in the unbounded audit detail, not in the indexed column.
     """
 
     note_text: str
@@ -47,6 +52,19 @@ class ValidationRequest:
     requested_service: str
     date_of_service: datetime.date
     payer_name: str
+    source_label: str = ""
+
+
+def content_reference(note_text: str) -> str:
+    """Derive a bounded, stable, opaque reference from note content.
+
+    Same note content yields the same reference, which lets an operator link
+    repeat validations of the same note without storing the note or a path in
+    the indexed column. The 16-hex-character prefix is far under the 128-char
+    column limit and collision-safe at this scale.
+    """
+    digest = hashlib.sha256(note_text.encode("utf-8")).hexdigest()
+    return f"note-{digest[:16]}"
 
 
 @dataclass(frozen=True)
@@ -200,6 +218,7 @@ def persist_validation(
     )
     audit_detail = {
         "requested_service": request.requested_service,
+        "source_label": request.source_label,
         "documentation_gaps": outcome.verified.documentation_gaps,
         "denial_risk_rationale": outcome.verified.denial_risk_rationale,
         "model_request_id": outcome.request_id,

@@ -74,6 +74,7 @@ def write_recommendation(
     and at least one policy clause.
     """
     _reject_ungrounded(record)
+    _reject_oversized_input_reference(record)
 
     recommendation_row = Recommendation(
         input_reference=record.input_reference,
@@ -106,6 +107,27 @@ def write_recommendation(
 
     session.commit()
     return recommendation_row.id
+
+
+# The input_reference column width in the data model. Enforced here so an
+# oversized reference fails with a clear error instead of a database-level
+# string truncation deep in the driver stack.
+_MAX_INPUT_REFERENCE_LENGTH = 128
+
+
+def _reject_oversized_input_reference(record: RecommendationRecord) -> None:
+    """Reject an input_reference that would overflow its column.
+
+    A raw file path can exceed the column width; callers must derive a bounded
+    reference (see pipeline.content_reference). Failing loudly here beats a
+    driver-level truncation error and points at the real cause.
+    """
+    if len(record.input_reference) > _MAX_INPUT_REFERENCE_LENGTH:
+        raise ValueError(
+            f"input_reference is {len(record.input_reference)} characters, over "
+            f"the {_MAX_INPUT_REFERENCE_LENGTH} limit; pass a bounded reference "
+            "such as content_reference(note_text), not a raw path"
+        )
 
 
 def _reject_ungrounded(record: RecommendationRecord) -> None:

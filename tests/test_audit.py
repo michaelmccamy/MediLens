@@ -130,3 +130,13 @@ def test_rejects_recommendation_without_policy_clauses(session: Session) -> None
         write_recommendation(session, record, FIXED_CREATED_AT)
 
     assert session.query(Recommendation).count() == 0
+
+
+def test_rejects_oversized_input_reference(session: Session) -> None:
+    record = _make_record()
+    record.input_reference = "x" * 200
+
+    with pytest.raises(ValueError, match="input_reference"):
+        write_recommendation(session, record, FIXED_CREATED_AT)
+
+    assert session.query(Recommendation).count() == 0

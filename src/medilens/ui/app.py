@@ -22,7 +22,6 @@ CLAUDE.md guardrails visible in this surface:
 """
 
 import datetime
-import hashlib
 from pathlib import Path
 
 import streamlit as st
@@ -118,18 +117,19 @@ def _run_live_validation(
     from medilens.db.session import build_engine, build_session_factory
     from medilens.reasoning.pipeline import (
         ValidationRequest,
+        content_reference,
         persist_validation,
         run_validation,
     )
     from medilens.reasoning.prompts import load_prompt_template
 
-    note_hash = hashlib.sha256(note_text.encode("utf-8")).hexdigest()[:16]
     request = ValidationRequest(
         note_text=note_text,
-        input_reference=f"ui-note-{note_hash}",
+        input_reference=content_reference(note_text),
         requested_service=requested_service,
         date_of_service=date_of_service,
         payer_name=payer_name,
+        source_label="pasted note in review UI",
     )
     prompt_template = load_prompt_template()
     model_client = ModelClient(settings)

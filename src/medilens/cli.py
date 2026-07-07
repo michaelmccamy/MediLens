@@ -22,6 +22,7 @@ from medilens.ingestion import run_ingestion
 from medilens.reasoning.pipeline import (
     ValidationOutcome,
     ValidationRequest,
+    content_reference,
     persist_validation,
     run_validation,
 )
@@ -107,10 +108,11 @@ def run_validate_command(settings: Settings, args: argparse.Namespace) -> None:
 
     request = ValidationRequest(
         note_text=note_text,
-        input_reference=args.note_path,
+        input_reference=content_reference(note_text),
         requested_service=args.requested_service,
         date_of_service=date_of_service,
         payer_name=args.payer,
+        source_label=args.note_path,
     )
     prompt_template = load_prompt_template()
     model_client = ModelClient(settings)

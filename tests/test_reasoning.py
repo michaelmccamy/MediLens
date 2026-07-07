@@ -25,6 +25,7 @@ from medilens.db.models import AuditLogEntry, Base, Recommendation
 from medilens.ingestion import run_ingestion
 from medilens.reasoning.pipeline import (
     ValidationRequest,
+    content_reference,
     persist_validation,
     run_validation,
 )
@@ -212,6 +213,52 @@ def test_pipeline_persists_to_audit_store(session: Session, note_text: str) -> N
         .count()
     )
     assert audit_count == 1
+
+
+def test_content_reference_is_bounded_and_stable() -> None:
+    long_note = "x" * 100000
+    reference = content_reference(long_note)
+
+    assert reference == content_reference(long_note)
+    assert len(reference) <= 128
+    assert reference.startswith("note-")
+
+
+def test_long_source_path_does_not_overflow_input_reference(
+    session: Session, note_text: str
+) -> None:
+    # Reproduces the live bug: a long note path used to overflow the 128-char
+    # input_reference column. The bounded content reference fixes it, and the
+    # original path is preserved in the audit detail via source_label.
+    long_path = "C:/" + "nested/" * 40 + "lumbar_mri_example.txt"
+    request = ValidationRequest(
+        note_text=note_text,
+        input_reference=content_reference(note_text),
+        requested_service="lumbar MRI",
+        date_of_service=datetime.date(2026, 6, 1),
+        payer_name="Medicare",
+        source_label=long_path,
+    )
+    stub = StubModelClient(_make_valid_output())
+    template = load_prompt_template()
+    outcome = run_validation(session, stub, request, template)
+
+    recommendation_id = persist_validation(
+        session, request, outcome, FIXED_CREATED_AT
+    )
+
+    stored = session.get(Recommendation, recommendation_id)
+    assert stored is not None
+    assert len(stored.input_reference) <= 128
+    # The full path is still traceable in the append-only audit detail.
+    import json
+
+    audit_entry = (
+        session.query(AuditLogEntry)
+        .filter(AuditLogEntry.recommendation_id == recommendation_id)
+        .one()
+    )
+    assert json.loads(audit_entry.detail_json)["source_label"] == long_path
 
 
 def test_empty_code_recommendations_is_valid_and_persistable(
