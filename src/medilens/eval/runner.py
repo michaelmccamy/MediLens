@@ -46,8 +46,18 @@ STATUS_SCORED = "scored"
 STATUS_REFUSED = "refused"
 STATUS_ERROR = "error"
 
-DEFAULT_DENIAL_THRESHOLD = 0.5
-DEFAULT_SWEEP = [0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8]
+# The documented false-negative vs false-positive tradeoff (CLAUDE.md
+# section 8): this is a pre-claim denial-prevention tool, so a missed at-risk
+# claim (false negative) defeats its purpose, while a flagged-but-fine claim
+# (false positive) costs one human review. We therefore prefer false
+# positives and set the default threshold at the floor of the computed
+# insufficient-documentation band (coverage._SCORE_INSUFFICIENT_BASE): every
+# determination other than meets_criteria among predictable outcomes is
+# flagged as at-risk. The 2026-07-09 sweep confirmed 0.5 misses
+# one-failing-clause cases (score 0.41) that 0.35 catches. Raise this only
+# with coder-adjudicated evidence of alert fatigue.
+DEFAULT_DENIAL_THRESHOLD = 0.35
+DEFAULT_SWEEP = [0.2, 0.3, 0.35, 0.4, 0.5, 0.6, 0.7, 0.8]
 
 
 @dataclass(frozen=True)

@@ -87,9 +87,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
     evaluate_parser.add_argument(
         "--threshold",
         type=float,
-        default=0.5,
+        default=0.35,
         help="Denial-risk threshold: a score at or above this predicts a "
-        "denial. Default 0.5. Use the printed sweep to tune it.",
+        "denial. Default 0.35, the floor of the insufficient-documentation "
+        "band, preferring false positives (extra review) over false "
+        "negatives (missed denial risk). Use the printed sweep to tune it.",
     )
     evaluate_parser.set_defaults(handler=run_evaluate_command)
 
