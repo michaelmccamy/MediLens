@@ -17,5 +17,8 @@ hallucis longus. Reflexes symmetric.
 Assessment: Lumbar radiculopathy, left L5 distribution, persistent despite 6
 weeks of conservative therapy.
 
+Imaging history: No prior lumbar MRI or other advanced imaging has been
+performed for this episode.
+
 Plan: Order lumbar MRI without contrast to evaluate for disc herniation or
 nerve root compression given failure of conservative management.

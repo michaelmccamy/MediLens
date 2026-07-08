@@ -6,15 +6,13 @@ criteria for the beachhead. Every policy carries an effective date range and a
 content hash so queries resolve against the date of service (guardrail 5) and
 so a changed upstream policy is detected on re-ingestion (section 6).
 
-Mirrors the code-set ingester in structure: parse_policy_seed_file turns a
-YAML file into plain records with no database dependency, and ingest_policies
-writes them. Parsing is kept separate from writing so the parser is
-unit-testable without a database.
-
-The seed's per-policy criteria are rendered into a single numbered policy_text
-block so the reasoning layer can cite a specific clause by number
-(guardrail 4). Rendering is deterministic, so the content hash is stable
-across re-ingestion of unchanged policies.
+Policies are policy schema v2 (docs/policy-schema.md): structured clauses with
+stable clause_ids, evaluation types, deterministic rules, and judgment
+questions. The structure is validated at parse time (a malformed policy fails
+the ingest run loudly), stored canonically in structure_json, and also
+rendered into a deterministic human-readable policy_text for coder display and
+model context. The content hash covers the structure, so any clause change is
+a new policy version and prior versions are preserved for audit.
 """
 
 import datetime
@@ -28,6 +26,12 @@ from sqlalchemy.orm import Session
 
 from medilens.db.models import PayerPolicy
 from medilens.hashing import hash_content
+from medilens.policy.structure import (
+    PolicyStructure,
+    parse_policy_structure,
+    render_structure_text,
+    structure_to_json,
+)
 
 
 @dataclass(frozen=True)
@@ -35,9 +39,9 @@ class ParsedPolicy:
     """One payer-policy record parsed from a seed file, before the DB.
 
     Frozen because a parsed record is a value: the ingester hashes and writes
-    it without altering it. service is the human-readable label of the service
-    the policy governs; service_keywords is the curated comma-joined lowercase
-    keyword list retrieval uses to match a requested service to this policy.
+    it without altering it. structure is the validated policy-v2 content;
+    structure_json is its canonical serialization (what gets stored and
+    hashed); policy_text is the deterministic human-readable rendering.
     """
 
     payer_name: str
@@ -46,6 +50,8 @@ class ParsedPolicy:
     service: str
     service_keywords: str
     policy_text: str
+    structure: PolicyStructure
+    structure_json: str
     effective_start: datetime.date
     effective_end: datetime.date | None
     source: str
@@ -55,8 +61,9 @@ def compute_policy_hash(policy: ParsedPolicy) -> str:
     """Hash the semantic fields that define a payer policy.
 
     Covers exactly the fields whose change should count as a new policy
-    version: payer, identifier, specialty, the rendered criteria text, and the
-    effective date range. Excludes retrieved_at, which is ingestion metadata.
+    version, including the canonical structure JSON, so any clause, rule, or
+    fact change re-ingests as a new version. Excludes retrieved_at, which is
+    ingestion metadata.
     """
     effective_end_text = ""
     if policy.effective_end is not None:
@@ -68,7 +75,7 @@ def compute_policy_hash(policy: ParsedPolicy) -> str:
         policy.specialty,
         policy.service,
         policy.service_keywords,
-        policy.policy_text,
+        policy.structure_json,
         policy.effective_start.isoformat(),
         effective_end_text,
     ]
@@ -105,28 +112,13 @@ def _coerce_optional_date(value: Any, context: str) -> datetime.date | None:
     return _coerce_date(value, context)
 
 
-def render_policy_text(service: str, criteria: list[str]) -> str:
-    """Render a service plus its criteria into a numbered, citable text block.
-
-    The numbering lets a recommendation cite a specific clause (guardrail 4),
-    and the deterministic layout keeps the content hash stable.
-    """
-    lines: list[str] = []
-    lines.append(f"Service: {service}")
-    lines.append("")
-    lines.append("Documentation criteria:")
-    clause_number = 1
-    for criterion in criteria:
-        lines.append(f"{clause_number}. {criterion}")
-        clause_number += 1
-    return "\n".join(lines)
-
-
 def parse_policy_seed_file(seed_path: Path) -> list[ParsedPolicy]:
     """Parse a curated payer-policy YAML file into ParsedPolicy records.
 
     The file carries the specialty at the top level; each policy carries its
-    payer, identifier, service, effective dates, source, and criteria list.
+    payer, identifier, service, effective dates, source, and a policy-v2
+    structure block, which is validated here (clause ids unique, evaluation
+    types known, rules referencing declared facts, and so on).
     """
     raw_text = seed_path.read_text(encoding="utf-8")
     document = yaml.safe_load(raw_text)
@@ -166,14 +158,14 @@ def parse_policy_seed_file(seed_path: Path) -> list[ParsedPolicy]:
         effective_end = _coerce_optional_date(
             policy_row.get("effective_end"), context
         )
-        criteria = _require_key(policy_row, "criteria", context)
-        if not isinstance(criteria, list) or len(criteria) == 0:
-            raise ValueError(
-                f"policy seed file {context} policy {policy_identifier!r} "
-                "must have a non-empty 'criteria' list"
-            )
 
-        policy_text = render_policy_text(service, criteria)
+        raw_structure = _require_key(policy_row, "structure", context)
+        structure = parse_policy_structure(
+            raw_structure, f"{context}:{policy_identifier}"
+        )
+        structure_json = structure_to_json(structure)
+        policy_text = render_structure_text(service, structure)
+
         policy = ParsedPolicy(
             payer_name=payer_name,
             policy_identifier=policy_identifier,
@@ -181,6 +173,8 @@ def parse_policy_seed_file(seed_path: Path) -> list[ParsedPolicy]:
             service=service,
             service_keywords=service_keywords,
             policy_text=policy_text,
+            structure=structure,
+            structure_json=structure_json,
             effective_start=effective_start,
             effective_end=effective_end,
             source=source,
@@ -223,6 +217,7 @@ def ingest_policies(
             service=policy.service,
             service_keywords=policy.service_keywords,
             policy_text=policy.policy_text,
+            structure_json=policy.structure_json,
             effective_start=policy.effective_start,
             effective_end=policy.effective_end,
             source=policy.source,

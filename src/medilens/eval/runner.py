@@ -8,9 +8,16 @@ Refusals (PHI, no applicable policy, missing retrieval) are first-class
 outcomes here, not errors to swallow: a case is scored, refused, or errored,
 and the report counts each so a refusal never silently inflates or deflates a
 metric.
+
+Under policy schema v2 the runner also scores the computed layer: the overall
+determination against its gold label, and each intentionally-targeted clause
+status against its expected status. Cases whose determination is
+manual_review are EXCLUDED from denial precision/recall (decision 4,
+docs/policy-schema.md): "needs a human" is not a denial prediction, and
+counting it either way would distort the numbers.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from sqlalchemy.orm import Session
 
@@ -25,6 +32,7 @@ from medilens.eval.metrics import (
     sweep_denial_thresholds,
 )
 from medilens.phi.screening import PhiDetectedError
+from medilens.reasoning.coverage import DETERMINATION_MANUAL_REVIEW
 from medilens.reasoning.pipeline import (
     NoApplicablePolicyError,
     ValidationRequest,
@@ -52,10 +60,23 @@ class CaseResult:
     expected_codes: frozenset[str]
     denial_score: float | None
     expected_denied: bool | None
-    rejection_count: int
-    grounding_ok: bool
-    expect_refusal: bool
-    detail: str
+    determination: str | None
+    expected_determination: str | None
+    clause_statuses: dict[str, str] = field(default_factory=dict)
+    expected_clause_statuses: dict[str, str] = field(default_factory=dict)
+    rejection_count: int = 0
+    grounding_ok: bool = True
+    expect_refusal: bool = False
+    detail: str = ""
+
+    def clause_mismatches(self) -> list[tuple[str, str, str | None]]:
+        """(clause_id, expected, actual) for every missed clause expectation."""
+        mismatches: list[tuple[str, str, str | None]] = []
+        for clause_id, expected_status in self.expected_clause_statuses.items():
+            actual_status = self.clause_statuses.get(clause_id)
+            if actual_status != expected_status:
+                mismatches.append((clause_id, expected_status, actual_status))
+        return mismatches
 
 
 def _grounding_ok(code_recommendations) -> bool:
@@ -100,8 +121,9 @@ def run_case(
             expected_codes=case.expected_codes,
             denial_score=None,
             expected_denied=case.expected_denied,
-            rejection_count=0,
-            grounding_ok=True,
+            determination=None,
+            expected_determination=case.expected_determination,
+            expected_clause_statuses=case.expected_clause_statuses,
             expect_refusal=case.expect_refusal,
             detail=str(refusal),
         )
@@ -113,23 +135,33 @@ def run_case(
             expected_codes=case.expected_codes,
             denial_score=None,
             expected_denied=case.expected_denied,
-            rejection_count=0,
-            grounding_ok=True,
+            determination=None,
+            expected_determination=case.expected_determination,
+            expected_clause_statuses=case.expected_clause_statuses,
             expect_refusal=case.expect_refusal,
             detail=str(error),
         )
 
     verified = outcome.verified
+    assessment = outcome.assessment
     predicted_codes = frozenset(
         recommendation.code for recommendation in verified.code_recommendations
     )
+    clause_statuses: dict[str, str] = {}
+    for clause_result in assessment.clause_results:
+        clause_statuses[clause_result.clause_id] = clause_result.status
+
     return CaseResult(
         case_id=case.case_id,
         status=STATUS_SCORED,
         predicted_codes=predicted_codes,
         expected_codes=case.expected_codes,
-        denial_score=verified.denial_risk_score,
+        denial_score=assessment.denial_risk_score,
         expected_denied=case.expected_denied,
+        determination=assessment.determination,
+        expected_determination=case.expected_determination,
+        clause_statuses=clause_statuses,
+        expected_clause_statuses=case.expected_clause_statuses,
         rejection_count=len(verified.rejections),
         grounding_ok=_grounding_ok(verified.code_recommendations),
         expect_refusal=case.expect_refusal,
@@ -151,12 +183,23 @@ class EvaluationReport:
     error_count: int
     refusal_expected: int
     refusal_correct: int
+    determination_expected: int
+    determination_correct: int
+    clause_expected: int
+    clause_correct: int
+    manual_review_count: int
 
     def scored_denial_pairs(self) -> list[tuple[float, bool]]:
-        """(score, expected_denied) for scored cases with a denial label."""
+        """(score, expected_denied) for denial-scoreable cases.
+
+        Excludes refusals, cases without a denial label, and manual_review
+        determinations (decision 4: needs-human-review is not a prediction).
+        """
         pairs: list[tuple[float, bool]] = []
         for result in self.results:
             if result.status != STATUS_SCORED:
+                continue
+            if result.determination == DETERMINATION_MANUAL_REVIEW:
                 continue
             if result.denial_score is None or result.expected_denied is None:
                 continue
@@ -189,7 +232,11 @@ def evaluate(
     code_metrics = aggregate_code_metrics(code_pairs)
 
     denial_pairs: list[tuple[float, bool]] = []
+    manual_review_count = 0
     for result in scored:
+        if result.determination == DETERMINATION_MANUAL_REVIEW:
+            manual_review_count = manual_review_count + 1
+            continue
         if result.denial_score is not None and result.expected_denied is not None:
             denial_pairs.append((result.denial_score, result.expected_denied))
     denial_metrics = denial_metrics_at_threshold(denial_pairs, threshold)
@@ -209,6 +256,20 @@ def evaluate(
             if result.status == STATUS_REFUSED:
                 refusal_correct = refusal_correct + 1
 
+    determination_expected = 0
+    determination_correct = 0
+    clause_expected = 0
+    clause_correct = 0
+    for result in scored:
+        if result.expected_determination is not None:
+            determination_expected = determination_expected + 1
+            if result.determination == result.expected_determination:
+                determination_correct = determination_correct + 1
+        for clause_id, expected_status in result.expected_clause_statuses.items():
+            clause_expected = clause_expected + 1
+            if result.clause_statuses.get(clause_id) == expected_status:
+                clause_correct = clause_correct + 1
+
     return EvaluationReport(
         results=results,
         threshold=threshold,
@@ -220,6 +281,11 @@ def evaluate(
         error_count=len(errored),
         refusal_expected=refusal_expected,
         refusal_correct=refusal_correct,
+        determination_expected=determination_expected,
+        determination_correct=determination_correct,
+        clause_expected=clause_expected,
+        clause_correct=clause_correct,
+        manual_review_count=manual_review_count,
     )
 
 
@@ -245,7 +311,23 @@ def format_report(report: EvaluationReport) -> str:
     )
     lines.append("")
 
-    lines.append(f"Denial prediction (threshold {report.threshold:.2f})")
+    if report.determination_expected > 0:
+        lines.append(
+            "Coverage determination accuracy: "
+            f"{report.determination_correct}/{report.determination_expected}"
+        )
+    if report.clause_expected > 0:
+        lines.append(
+            "Targeted clause-status accuracy: "
+            f"{report.clause_correct}/{report.clause_expected}"
+        )
+    lines.append("")
+
+    lines.append(
+        f"Denial prediction (threshold {report.threshold:.2f}; "
+        f"{report.manual_review_count} manual_review case(s) excluded as "
+        "needs-human-review, not predictions)"
+    )
     denial = report.denial_metrics
     lines.append(
         f"  precision {denial.precision:.2f}  recall {denial.recall:.2f}  "
@@ -262,7 +344,7 @@ def format_report(report: EvaluationReport) -> str:
     lines.append(
         f"  model clean rate: {citations.model_clean_rate:.2f} "
         f"({citations.clean_cases}/{citations.scored_cases} scored cases had no "
-        "dropped items)"
+        "dropped or downgraded items)"
     )
     lines.append("")
 
@@ -292,11 +374,26 @@ def format_report(report: EvaluationReport) -> str:
                 if result.denial_score is not None
                 else "n/a"
             )
+            determination_text = result.determination or "n/a"
+            marker = ""
+            if (
+                result.expected_determination is not None
+                and result.determination != result.expected_determination
+            ):
+                marker = (
+                    f"  <-- expected {result.expected_determination}"
+                )
             lines.append(
                 f"  [{result.status}] {result.case_id}: "
-                f"predicted [{codes}] expected [{expected}] "
-                f"risk {score_text} rejections {result.rejection_count}"
+                f"{determination_text} risk {score_text} "
+                f"codes [{codes}] expected [{expected}] "
+                f"rejections {result.rejection_count}{marker}"
             )
+            for clause_id, expected_status, actual_status in result.clause_mismatches():
+                lines.append(
+                    f"      clause {clause_id}: expected {expected_status}, "
+                    f"got {actual_status}"
+                )
         else:
             lines.append(
                 f"  [{result.status}] {result.case_id}: {result.detail}"

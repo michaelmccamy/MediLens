@@ -1,9 +1,17 @@
-# Policy schema v2 (proposal)
+# Policy schema v2
 
-Status: DRAFT for review. Nothing here is built yet. This defines the "mold"
-every payer policy will conform to before we add policy breadth. React to the
-shape here; once it is agreed we refactor the two existing policies onto it,
-add one structurally different exemplar, and build the evaluator.
+Status: ACCEPTED 2026-07-08. All five open decisions in section 16 were
+resolved as recommended: (1) denial score computed in code from clause
+statuses, model supplies rationale prose only; (2) boolean OR-groups deferred,
+overall determination is all-required-clauses with single-clause overrides;
+(3) model extracts typed fact values with verified verbatim evidence, code
+makes every threshold decision; (4) manual_review outcomes are excluded from
+denial precision/recall and scored separately as needs-human-review; (5) the
+section 5 starter operator vocabulary is the initial scope.
+
+This defines the "mold" every payer policy conforms to before policy breadth
+is added: the two existing policies are refactored onto it, plus one
+structurally different exemplar (frequency-limited RFA).
 
 ## 1. Purpose and principles
 
@@ -83,8 +91,8 @@ reordered without breaking citations or audit records that reference it.
 |-----------------|--------------------------|-----------------------------------|---------------------------|
 | deterministic   | code (rule engine)       | none, or extract a fact + evidence | yes, if inputs available  |
 | model_judged    | model                    | assert status with cited evidence  | yes, only with evidence   |
-| hybrid          | code AND model           | extract fact + assert judgment      | yes, only if both pass    |
-| manual_review   | nobody (defers to human) | none                                | never                     |
+| hybrid          | code AND model           | extract fact + assert judgment     | yes, only if both pass    |
+| manual_review   | nobody (defers to human) | none                               | never                     |
 
 - deterministic: a rule over structured inputs (request metadata and/or a
   verified extracted fact) decides. The model never asserts the status; at most

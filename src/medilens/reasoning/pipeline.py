@@ -1,12 +1,17 @@
-"""The reasoning pipeline: retrieve, prompt, call the model, verify, persist.
+"""The reasoning pipeline: retrieve, prompt, call the model, verify, evaluate.
 
 This is the layer CLAUDE.md section 4 describes: extract clinical facts from
 the note, match them to date-correct codes and coverage requirements, identify
 gaps, and explain each recommendation with citations. Orchestration lives here;
 the actual work is delegated to the modules that own it (retrieval to the
 knowledge and policy layers, the model call to the client layer, truth checking
-to verification, persistence to the audit writer), keeping each concern
-separate per section 7.
+to verification, clause evaluation and the computed determination to coverage,
+persistence to the audit writer), keeping each concern separate per section 7.
+
+Under policy schema v2 the model never decides policy satisfaction: it
+extracts evidenced facts and judgments, the verifier checks them, the rule
+engine and clause evaluator compute every clause status, and the overall
+determination and denial-risk score are derived in code from those statuses.
 
 Nothing in this module reads the clock or the note file: timestamps, note text,
 and the model client are supplied by the caller (the CLI or tests), so a full
@@ -20,11 +25,18 @@ from dataclasses import dataclass
 from sqlalchemy.orm import Session
 
 from medilens.audit.writer import RecommendationRecord, write_recommendation
+from medilens.db.models import PayerPolicy
 from medilens.knowledge.retrieval import list_codes_at_date
 from medilens.phi.screening import assert_no_blocking_phi
 from medilens.policy.retrieval import (
     list_policies_for_payer_at_date,
     service_matches,
+)
+from medilens.policy.structure import PolicyStructure, structure_from_json
+from medilens.reasoning.coverage import (
+    CoverageAssessment,
+    combine_assessments,
+    evaluate_policy_coverage,
 )
 from medilens.reasoning.prompts import PromptTemplate, build_user_content
 from medilens.reasoning.schema import VALIDATION_OUTPUT_SCHEMA
@@ -106,14 +118,41 @@ def content_reference(note_text: str) -> str:
 
 @dataclass(frozen=True)
 class ValidationOutcome:
-    """A verified validation plus the provenance the audit record needs."""
+    """A verified validation, its computed coverage, and audit provenance."""
 
     verified: VerifiedValidation
+    assessment: CoverageAssessment
     model_name: str
     prompt_template_version: str
     request_id: str | None
     input_tokens: int
     output_tokens: int
+
+
+def _latest_structured_policies(
+    matched: list[PayerPolicy],
+) -> list[tuple[PayerPolicy, PolicyStructure]]:
+    """Pick the newest version of each matched policy and parse its structure.
+
+    Multiple in-force versions of the same identifier can coexist (versioning
+    is append-only); the most recently ingested one is what a coder would be
+    shown. A newest version without structure predates schema v2 and cannot be
+    evaluated: that is a loud configuration error, not a silent skip.
+    """
+    latest_by_identifier: dict[str, PayerPolicy] = {}
+    for policy in matched:
+        existing = latest_by_identifier.get(policy.policy_identifier)
+        if existing is None or policy.retrieved_at > existing.retrieved_at:
+            latest_by_identifier[policy.policy_identifier] = policy
+
+    structured: list[tuple[PayerPolicy, PolicyStructure]] = []
+    for policy in latest_by_identifier.values():
+        structure = structure_from_json(
+            policy.structure_json, policy.policy_identifier
+        )
+        structured.append((policy, structure))
+    structured.sort(key=lambda pair: pair[0].policy_identifier)
+    return structured
 
 
 def run_validation(
@@ -162,11 +201,11 @@ def run_validation(
     # Only policies that govern the requested service reach the model. Feeding
     # an inapplicable policy produces confused half-answers; refusing here is
     # the honest outcome (section 7) and costs no model call.
-    policies = []
+    matched = []
     for policy in payer_policies:
         if service_matches(request.requested_service, policy.service_keywords):
-            policies.append(policy)
-    if len(policies) == 0:
+            matched.append(policy)
+    if len(matched) == 0:
         available_services: list[str] = []
         for policy in payer_policies:
             if policy.service and policy.service not in available_services:
@@ -177,13 +216,15 @@ def run_validation(
             available_services=available_services,
         )
 
+    structured_policies = _latest_structured_policies(matched)
+
     user_content = build_user_content(
         note_text=request.note_text,
         requested_service=request.requested_service,
         date_of_service=request.date_of_service,
         payer_name=request.payer_name,
         candidate_codes=candidate_codes,
-        policies=policies,
+        policies=structured_policies,
     )
 
     result = model_client.create_structured(
@@ -196,11 +237,32 @@ def run_validation(
         output=result.data,
         note_text=request.note_text,
         candidate_codes=candidate_codes,
-        policies=policies,
+        policies=structured_policies,
     )
+
+    # Coverage is computed in code from verified inputs: rule engine for
+    # deterministic clauses, verified judgments for qualitative ones, fixed
+    # precedence for the determination, derived score (schema v2, decision 1).
+    recommended_codes = frozenset(
+        recommendation.code for recommendation in verified.code_recommendations
+    )
+    per_policy_assessments = []
+    for policy_row, structure in structured_policies:
+        per_policy_assessments.append(
+            evaluate_policy_coverage(
+                policy_row=policy_row,
+                structure=structure,
+                clinical_facts=verified.clinical_facts,
+                clause_judgments=verified.clause_judgments,
+                date_of_service=request.date_of_service,
+                recommended_codes=recommended_codes,
+            )
+        )
+    assessment = combine_assessments(per_policy_assessments)
 
     outcome = ValidationOutcome(
         verified=verified,
+        assessment=assessment,
         model_name=result.model,
         prompt_template_version=f"{prompt_template.name}_{prompt_template.version}",
         request_id=result.request_id,
@@ -218,9 +280,10 @@ def persist_validation(
 ) -> int:
     """Write a verified validation to the append-only audit store.
 
-    Serializes the verified structures (not the raw model output) so the audit
-    record reflects exactly what survived verification and was shown to the
-    coder. Returns the recommendation id.
+    Serializes the verified structures and the computed clause results (not
+    the raw model output) so the audit record reflects exactly what survived
+    verification and what the coder was shown, including how every clause was
+    decided. Returns the recommendation id.
     """
     extracted_facts = []
     for fact in outcome.verified.extracted_facts:
@@ -235,7 +298,6 @@ def persist_validation(
 
     recommended_codes = []
     cited_note_spans = []
-    cited_policy_clauses = []
     for recommendation in outcome.verified.code_recommendations:
         recommended_codes.append(
             {
@@ -243,9 +305,6 @@ def persist_validation(
                 "code_system": recommendation.code_system,
                 "description": recommendation.description,
                 "rationale": recommendation.rationale,
-                # Explicit coverage state: True means verified clause citations
-                # exist for this code; False means documentation-supported only.
-                "has_coverage_basis": recommendation.has_coverage_basis,
             }
         )
         for span in recommendation.supporting_spans:
@@ -257,12 +316,29 @@ def persist_validation(
                     "end_offset": span.end_offset,
                 }
             )
-        for clause in recommendation.cited_clauses:
-            cited_policy_clauses.append(
+
+    # Clause results are the coverage citation under schema v2: which clause,
+    # decided how, with what status. Evidence spans go to the audit detail.
+    clause_results = []
+    clause_evidence = []
+    for result in outcome.assessment.clause_results:
+        clause_results.append(
+            {
+                "policy_identifier": result.policy_identifier,
+                "clause_id": result.clause_id,
+                "status": result.status,
+                "decided_by": result.decided_by,
+                "detail": result.detail,
+                "required": result.required,
+            }
+        )
+        for span in result.evidence:
+            clause_evidence.append(
                 {
-                    "code": recommendation.code,
-                    "policy_identifier": clause.policy_identifier,
-                    "clause_number": clause.clause_number,
+                    "clause_id": result.clause_id,
+                    "text": span.text,
+                    "start_offset": span.start_offset,
+                    "end_offset": span.end_offset,
                 }
             )
 
@@ -273,8 +349,9 @@ def persist_validation(
         extracted_facts=extracted_facts,
         recommended_codes=recommended_codes,
         cited_note_spans=cited_note_spans,
-        cited_policy_clauses=cited_policy_clauses,
-        denial_risk_score=outcome.verified.denial_risk_score,
+        cited_policy_clauses=clause_results,
+        denial_risk_score=outcome.assessment.denial_risk_score,
+        coverage_determination=outcome.assessment.determination,
         model_name=outcome.model_name,
         model_version=outcome.model_name,
         prompt_template_version=outcome.prompt_template_version,
@@ -283,7 +360,9 @@ def persist_validation(
         "requested_service": request.requested_service,
         "source_label": request.source_label,
         "documentation_gaps": outcome.verified.documentation_gaps,
-        "denial_risk_rationale": outcome.verified.denial_risk_rationale,
+        "determination_rationale": outcome.assessment.determination_rationale,
+        "model_coverage_rationale": outcome.verified.coverage_rationale,
+        "clause_evidence": clause_evidence,
         "verification_rejections": outcome.verified.rejections,
         "model_request_id": outcome.request_id,
         "input_tokens": outcome.input_tokens,

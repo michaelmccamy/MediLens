@@ -45,24 +45,38 @@ def upgrade_schema(engine: Engine) -> None:
     from sqlalchemy import inspect, text
 
     inspector = inspect(engine)
-    if "payer_policy" not in inspector.get_table_names():
-        return
-
-    existing_columns = set()
-    for column in inspector.get_columns("payer_policy"):
-        existing_columns.add(column["name"])
-
+    table_names = set(inspector.get_table_names())
     statements: list[str] = []
-    if "service" not in existing_columns:
-        statements.append(
-            "ALTER TABLE payer_policy "
-            "ADD COLUMN service VARCHAR(256) NOT NULL DEFAULT ''"
-        )
-    if "service_keywords" not in existing_columns:
-        statements.append(
-            "ALTER TABLE payer_policy "
-            "ADD COLUMN service_keywords VARCHAR(256) NOT NULL DEFAULT ''"
-        )
+
+    if "payer_policy" in table_names:
+        policy_columns = set()
+        for column in inspector.get_columns("payer_policy"):
+            policy_columns.add(column["name"])
+        if "service" not in policy_columns:
+            statements.append(
+                "ALTER TABLE payer_policy "
+                "ADD COLUMN service VARCHAR(256) NOT NULL DEFAULT ''"
+            )
+        if "service_keywords" not in policy_columns:
+            statements.append(
+                "ALTER TABLE payer_policy "
+                "ADD COLUMN service_keywords VARCHAR(256) NOT NULL DEFAULT ''"
+            )
+        if "structure_json" not in policy_columns:
+            statements.append(
+                "ALTER TABLE payer_policy "
+                "ADD COLUMN structure_json TEXT NOT NULL DEFAULT ''"
+            )
+
+    if "recommendation" in table_names:
+        recommendation_columns = set()
+        for column in inspector.get_columns("recommendation"):
+            recommendation_columns.add(column["name"])
+        if "coverage_determination" not in recommendation_columns:
+            statements.append(
+                "ALTER TABLE recommendation "
+                "ADD COLUMN coverage_determination VARCHAR(64) NOT NULL DEFAULT ''"
+            )
 
     if len(statements) == 0:
         return

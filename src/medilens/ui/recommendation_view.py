@@ -2,16 +2,20 @@
 
 This is the shape the review UI renders. It mirrors the fields the audit store
 persists (see medilens.audit.writer.RecommendationRecord and the Recommendation
-model): extracted facts, recommended codes, cited note spans, cited policy
-clauses, denial-risk score, and model/prompt provenance. Building the UI against
-this contract means the real reasoning layer, once it exists, populates the same
-structure with no UI changes.
+model): extracted facts, recommended codes, cited note spans, evaluated clause
+results, the computed coverage determination and denial-risk score, and
+model/prompt provenance. Building the UI against this contract means pipeline
+changes populate the same structure with no UI changes.
 
-IMPORTANT: build_sample_recommendation returns a fixed, illustrative SAMPLE. The
-reasoning layer is not implemented yet, so nothing here analyzes the note. Every
-field is marked is_sample=True and the model/prompt versions say so, and the UI
-labels the output as a sample. This matters in a clinical tool: unlabeled
-placeholder output that looks like a real analysis would be dangerous.
+Under policy schema v2 the determination and score are COMPUTED from clause
+statuses, never taken from the model; the model contributes evidence,
+judgments, and a clearly-labeled prose narrative.
+
+IMPORTANT: build_sample_recommendation returns a fixed, illustrative SAMPLE
+shown only when configuration is missing. Every such view is marked
+is_sample=True and the surfaces label it loudly. This matters in a clinical
+tool: unlabeled placeholder output that looks like a real analysis would be
+dangerous.
 
 No streamlit import here on purpose, so the contract and the sample are plain
 Python and unit-testable without the UI.
@@ -42,21 +46,27 @@ class NoteSpan:
 
 
 @dataclass
-class PolicyClauseCitation:
-    """A specific payer-policy clause cited as the coverage basis."""
+class ClauseResultView:
+    """One evaluated policy clause: the unit of the coverage determination."""
 
     policy_identifier: str
-    clause_number: int
-    clause_text: str
+    clause_id: str
+    title: str
+    status: str
+    decided_by: str
+    detail: str
+    required: bool
+    evidence: list[NoteSpan] = field(default_factory=list)
 
 
 @dataclass
 class CodeSuggestion:
-    """One recommended code with its grounding.
+    """One recommended code with its documentation grounding.
 
     rationale states why this is the most accurate supported code, never the
-    highest paying one (CLAUDE.md guiding principle). supporting_note_spans and
-    cited_policy_clauses satisfy the grounding-and-provenance rule (guardrail 4).
+    highest paying one (CLAUDE.md guiding principle). Coverage is policy-level
+    under schema v2 (see clause_results on the view), so codes carry note
+    spans only.
     """
 
     code: str
@@ -64,10 +74,6 @@ class CodeSuggestion:
     description: str
     rationale: str
     supporting_note_spans: list[NoteSpan] = field(default_factory=list)
-    cited_policy_clauses: list[PolicyClauseCitation] = field(default_factory=list)
-    # False means documentation-supported only: no clause from the applicable
-    # payer policy was (validly) cited, so coverage is unconfirmed.
-    has_coverage_basis: bool = True
 
 
 @dataclass
@@ -82,12 +88,15 @@ class RecommendationView:
     extracted_facts: list[str]
     code_suggestions: list[CodeSuggestion]
     documentation_gaps: list[str]
+    determination: str
     denial_risk_score: float
-    denial_risk_rationale: str
+    determination_rationale: str
+    model_coverage_rationale: str
     model_name: str
     model_version: str
     prompt_template_version: str
     generated_at: datetime.datetime
+    clause_results: list[ClauseResultView] = field(default_factory=list)
     verification_rejections: list[str] = field(default_factory=list)
 
 
@@ -99,9 +108,8 @@ def view_from_outcome(
     """Map a verified pipeline outcome onto the display contract.
 
     Pure translation, no reasoning: everything shown was already verified by
-    the grounding gates, so this function must not add, drop, or reword any
-    claim. Facts are shown as their fact text; each code carries its located
-    spans (real offsets) and resolved clause text.
+    the grounding gates or computed by the clause evaluator, so this function
+    must not add, drop, or reword any claim.
     """
     extracted_facts: list[str] = []
     for fact in outcome.verified.extracted_facts:
@@ -118,15 +126,6 @@ def view_from_outcome(
                     end_offset=located.end_offset,
                 )
             )
-        clauses: list[PolicyClauseCitation] = []
-        for clause in recommendation.cited_clauses:
-            clauses.append(
-                PolicyClauseCitation(
-                    policy_identifier=clause.policy_identifier,
-                    clause_number=clause.clause_number,
-                    clause_text=clause.clause_text,
-                )
-            )
         code_suggestions.append(
             CodeSuggestion(
                 code=recommendation.code,
@@ -134,8 +133,30 @@ def view_from_outcome(
                 description=recommendation.description,
                 rationale=recommendation.rationale,
                 supporting_note_spans=spans,
-                cited_policy_clauses=clauses,
-                has_coverage_basis=recommendation.has_coverage_basis,
+            )
+        )
+
+    clause_results: list[ClauseResultView] = []
+    for clause_result in outcome.assessment.clause_results:
+        evidence: list[NoteSpan] = []
+        for located in clause_result.evidence:
+            evidence.append(
+                NoteSpan(
+                    text=located.text,
+                    start_offset=located.start_offset,
+                    end_offset=located.end_offset,
+                )
+            )
+        clause_results.append(
+            ClauseResultView(
+                policy_identifier=clause_result.policy_identifier,
+                clause_id=clause_result.clause_id,
+                title=clause_result.title,
+                status=clause_result.status,
+                decided_by=clause_result.decided_by,
+                detail=clause_result.detail,
+                required=clause_result.required,
+                evidence=evidence,
             )
         )
 
@@ -148,12 +169,15 @@ def view_from_outcome(
         extracted_facts=extracted_facts,
         code_suggestions=code_suggestions,
         documentation_gaps=outcome.verified.documentation_gaps,
-        denial_risk_score=outcome.verified.denial_risk_score,
-        denial_risk_rationale=outcome.verified.denial_risk_rationale,
+        determination=outcome.assessment.determination,
+        denial_risk_score=outcome.assessment.denial_risk_score,
+        determination_rationale=outcome.assessment.determination_rationale,
+        model_coverage_rationale=outcome.verified.coverage_rationale,
         model_name=outcome.model_name,
         model_version=outcome.model_name,
         prompt_template_version=outcome.prompt_template_version,
         generated_at=generated_at,
+        clause_results=clause_results,
         verification_rejections=outcome.verified.rejections,
     )
 
@@ -182,14 +206,10 @@ def build_sample_recommendation(
 ) -> RecommendationView:
     """Build a fixed, clearly-labeled SAMPLE recommendation for the review UI.
 
-    This is the seam where the reasoning layer will plug in: replace this call
-    with the real extract-match-explain pipeline, returning the same
-    RecommendationView. Until then it returns an illustrative example anchored
-    to the lumbar-radiculopathy synthetic note, echoing the request inputs.
-
-    It performs no clinical reasoning. Note spans are located in the supplied
-    note when the sample phrases happen to be present, purely to demonstrate the
-    citation UI.
+    Shown only when configuration (API key or database) is missing, so the
+    surface is still demonstrable. It performs no clinical reasoning. Note
+    spans are located in the supplied note when the sample phrases happen to
+    be present, purely to demonstrate the citation UI.
     """
     supporting_spans = []
     supporting_spans.append(
@@ -197,17 +217,6 @@ def build_sample_recommendation(
     )
     supporting_spans.append(
         _find_span(note_text, "Diminished sensation in the left L5 dermatome")
-    )
-
-    mri_policy_clause = PolicyClauseCitation(
-        policy_identifier="SYN-LUMBAR-MRI-001",
-        clause_number=3,
-        clause_text=(
-            "Documentation records objective neurologic findings on examination "
-            "(for example a positive straight-leg-raise, dermatomal sensory loss, "
-            "motor weakness, or reflex change) supporting radiculopathy, or "
-            "explains their absence."
-        ),
     )
 
     code_suggestion = CodeSuggestion(
@@ -221,8 +230,54 @@ def build_sample_recommendation(
             "documented radicular findings."
         ),
         supporting_note_spans=supporting_spans,
-        cited_policy_clauses=[mri_policy_clause],
     )
+
+    clause_results = [
+        ClauseResultView(
+            policy_identifier="SYN-LUMBAR-MRI-001",
+            clause_id="symptom_duration",
+            title="Symptom duration and character",
+            status="satisfied",
+            decided_by="rule+model",
+            detail=(
+                "SAMPLE: rule min_duration: documented 8 weeks >= threshold "
+                "6 weeks; model judgment: satisfied (1 evidence span(s))"
+            ),
+            required=True,
+            evidence=[
+                _find_span(
+                    note_text,
+                    "Low back pain radiating to left leg, 8 weeks duration",
+                )
+            ],
+        ),
+        ClauseResultView(
+            policy_identifier="SYN-LUMBAR-MRI-001",
+            clause_id="objective_findings",
+            title="Objective neurologic findings",
+            status="satisfied",
+            decided_by="model",
+            detail="SAMPLE: model judgment: satisfied (1 evidence span(s))",
+            required=True,
+            evidence=[
+                _find_span(
+                    note_text, "Diminished sensation in the left L5 dermatome"
+                )
+            ],
+        ),
+        ClauseResultView(
+            policy_identifier="SYN-LUMBAR-MRI-001",
+            clause_id="not_recent_duplicate",
+            title="No recent duplicate study",
+            status="insufficient_documentation",
+            decided_by="model",
+            detail=(
+                "SAMPLE: no verified model judgment for this clause; silence "
+                "fails closed"
+            ),
+            required=True,
+        ),
+    ]
 
     extracted_facts = [
         "Low back pain with left leg radiation, documented duration 8 weeks.",
@@ -248,16 +303,22 @@ def build_sample_recommendation(
         extracted_facts=extracted_facts,
         code_suggestions=[code_suggestion],
         documentation_gaps=documentation_gaps,
-        denial_risk_score=0.18,
-        denial_risk_rationale=(
-            "Low illustrative risk: the documented duration, completed "
-            "conservative therapy, and objective neurologic findings align with "
-            "the sample coverage criteria. This score is a placeholder, not a "
-            "computed prediction."
+        determination="insufficient_documentation",
+        denial_risk_score=0.425,
+        determination_rationale=(
+            "SAMPLE. Computed from clause statuses "
+            "(symptom_duration=satisfied; objective_findings=satisfied; "
+            "not_recent_duplicate=insufficient_documentation). Determination: "
+            "insufficient_documentation."
         ),
-        model_name="SAMPLE (reasoning layer not implemented)",
+        model_coverage_rationale=(
+            "SAMPLE narrative: the documentation supports duration, therapy, "
+            "and objective findings, but does not address prior imaging."
+        ),
+        model_name="SAMPLE (not analyzed)",
         model_version="none",
         prompt_template_version="none",
         generated_at=generated_at,
+        clause_results=clause_results,
     )
     return recommendation

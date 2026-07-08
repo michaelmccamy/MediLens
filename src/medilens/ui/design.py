@@ -119,6 +119,38 @@ def risk_band(score: float) -> tuple[str, str]:
     return "High", COLOR_RISK_HIGH
 
 
+# Display labels and colors for the computed coverage determination
+# (policy schema v2). manual_review is not a denial prediction and its
+# rendering says so explicitly.
+_DETERMINATION_DISPLAY = {
+    "meets_criteria": ("Meets criteria", COLOR_RISK_LOW),
+    "insufficient_documentation": (
+        "Insufficient documentation",
+        COLOR_RISK_MODERATE,
+    ),
+    "does_not_meet": ("Does not meet", COLOR_RISK_HIGH),
+    "manual_review": ("Needs human review", COLOR_RISK_MODERATE),
+}
+
+# Status chip styling for clause results: (text color, background color).
+_CLAUSE_STATUS_STYLE = {
+    "satisfied": ("#00646f", "#e3f2f3"),
+    "not_applicable": ("#6a8a90", "#f0f0f0"),
+    "insufficient_documentation": ("#8a6d2f", "#fdf3dd"),
+    "manual_review": ("#8a6d2f", "#fdf3dd"),
+    "not_satisfied": (COLOR_ALERT_TEXT, "#ffe3e5"),
+    "contradictory_documentation": (COLOR_ALERT_TEXT, "#ffe3e5"),
+}
+
+
+def determination_display(determination: str) -> tuple[str, str]:
+    """Map a computed determination to its display label and color."""
+    display = _DETERMINATION_DISPLAY.get(determination)
+    if display is None:
+        return (determination, COLOR_RISK_MODERATE)
+    return display
+
+
 # --- host-page fragments (rendered by Streamlit st.markdown) -----------------
 
 
@@ -290,38 +322,110 @@ def _render_note_panel(note_text: str, spans: list[tuple[str, int, int]]) -> str
 
 
 def _render_hero(view: RecommendationView) -> str:
-    band_label, band_color = risk_band(view.denial_risk_score)
+    label, color = determination_display(view.determination)
     marker_left = f"{view.denial_risk_score * 100:.0f}%"
+    if view.determination == "manual_review":
+        score_caption = "placeholder score · not a denial prediction"
+    else:
+        score_caption = "computed from clause statuses"
     return f"""
 <div style="background: {COLOR_DEEP}; color: {COLOR_PAGE_BG}; border-radius: 10px; padding: 24px 26px;">
   <div style="display: flex; align-items: center; gap: 20px; flex-wrap: wrap;">
     <div style="display: flex; flex-direction: column; gap: 2px;">
-      <div style="font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.09em; color: rgba(255,249,249,0.6);">Predicted denial risk · {_esc(view.payer_name)}</div>
+      <div style="font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.09em; color: rgba(255,249,249,0.6);">Coverage determination · {_esc(view.payer_name)}</div>
       <div style="display: flex; align-items: baseline; gap: 12px;">
-        <div style="font-size: 42px; font-weight: 700; letter-spacing: -0.02em; color: {band_color};">{band_label}</div>
+        <div style="font-size: 38px; font-weight: 700; letter-spacing: -0.02em; color: {color};">{_esc(label)}</div>
         <div style="font-size: 20px; color: rgba(255,249,249,0.75);" class="mono">{view.denial_risk_score:.2f}</div>
       </div>
+      <div style="font-size: 11px; color: rgba(255,249,249,0.55);">{_esc(score_caption)}</div>
     </div>
     <div style="flex: 1; min-width: 220px; padding-top: 18px;">
       <div style="position: relative; height: 10px; border-radius: 999px; background: linear-gradient(90deg, {COLOR_PRIMARY} 0%, #7ab6a9 45%, #ff9aa5 70%, {COLOR_ALERT} 100%); opacity: 0.9;">
-        <div style="position: absolute; top: -5px; left: {marker_left}; width: 20px; height: 20px; margin-left: -10px; border-radius: 50%; background: {COLOR_PAGE_BG}; border: 4px solid {band_color}; box-sizing: border-box;"></div>
+        <div style="position: absolute; top: -5px; left: {marker_left}; width: 20px; height: 20px; margin-left: -10px; border-radius: 50%; background: {COLOR_PAGE_BG}; border: 4px solid {color}; box-sizing: border-box;"></div>
       </div>
       <div style="display: flex; justify-content: space-between; font-size: 10.5px; color: rgba(255,249,249,0.5); margin-top: 8px;" class="mono">
         <span>0.0</span><span>0.5</span><span>1.0</span>
       </div>
     </div>
   </div>
-  <p style="margin: 16px 0 0; font-size: 13.5px; line-height: 1.6; color: rgba(255,249,249,0.85);">{_esc(view.denial_risk_rationale)}</p>
+  <p style="margin: 16px 0 0; font-size: 13.5px; line-height: 1.6; color: rgba(255,249,249,0.85);">{_esc(view.determination_rationale)}</p>
+</div>
+"""
+
+
+def _render_clauses_card(view: RecommendationView) -> str:
+    """The clause-by-clause coverage table: how the determination was computed.
+
+    Evidence spans are clickable chips wired to the same highlight mechanism
+    as code citations (ids c<i>-<j> registered in the note segment map).
+    """
+    row_parts: list[str] = []
+    for clause_index, clause in enumerate(view.clause_results):
+        text_color, chip_bg = _CLAUSE_STATUS_STYLE.get(
+            clause.status, (COLOR_MUTED, "#f0f0f0")
+        )
+        status_label = clause.status.replace("_", " ")
+        required_label = "required" if clause.required else "override"
+
+        evidence_parts: list[str] = []
+        for evidence_index, span in enumerate(clause.evidence):
+            quote = _esc(span.text)
+            if span.is_located:
+                span_id = f"c{clause_index}-{evidence_index}"
+                mark = f"chars {span.start_offset}-{span.end_offset}"
+                evidence_parts.append(
+                    f'<button class="ml-chip" data-span="{span_id}" '
+                    'style="margin-top: 6px;">'
+                    f'<span class="chip-mark">{_esc(mark)}</span>'
+                    f'<span class="chip-quote">"{quote}"</span></button>'
+                )
+            else:
+                evidence_parts.append(
+                    '<div class="ml-chip" style="cursor: default; opacity: 0.7; margin-top: 6px;">'
+                    '<span class="chip-mark">illustrative</span>'
+                    f'<span class="chip-quote">"{quote}"</span></div>'
+                )
+        evidence_html = "".join(evidence_parts)
+
+        row_parts.append(f"""
+    <div style="padding: 13px 16px; border-bottom: 1px solid #f7e9e9;">
+      <div style="display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap;">
+        <span style="font-size: 11px; font-weight: 700; color: {text_color}; background: {chip_bg}; border-radius: 4px; padding: 3px 8px; text-transform: uppercase; letter-spacing: 0.05em; white-space: nowrap;">{_esc(status_label)}</span>
+        <span class="mono" style="font-size: 11.5px; font-weight: 600; color: #00646f;">{_esc(clause.clause_id)}</span>
+        <span style="font-size: 13.5px; font-weight: 600; color: {COLOR_TEXT};">{_esc(clause.title)}</span>
+        <span class="mono" style="font-size: 10.5px; color: {COLOR_MUTED}; margin-left: auto; white-space: nowrap;">{_esc(clause.decided_by)} · {_esc(required_label)}</span>
+      </div>
+      <div style="font-size: 12.5px; line-height: 1.55; color: {COLOR_TEXT_SECONDARY}; margin-top: 6px;">{_esc(clause.detail)}</div>
+      {evidence_html}
+    </div>
+""")
+
+    return f"""
+<div class="card">
+  <div class="card-header">
+    <div class="card-title">Coverage determination by clause</div>
+    <div class="card-subtitle">Each clause is decided by a rule in code, a cited model judgment, or both. Silence and missing data fail closed; the model never asserts the overall determination.</div>
+  </div>
+  {"".join(row_parts)}
+</div>
+"""
+
+
+def _render_narrative_card(view: RecommendationView) -> str:
+    if not view.model_coverage_rationale:
+        return ""
+    return f"""
+<div class="card">
+  <div class="card-header">
+    <div class="card-title">Model narrative</div>
+    <div class="card-subtitle">Prose from the model. The determination and score above are computed from clause statuses, not from this text.</div>
+  </div>
+  <div style="padding: 14px 22px 18px; font-size: 13.5px; line-height: 1.6; color: {COLOR_TEXT_SECONDARY};">{_esc(view.model_coverage_rationale)}</div>
 </div>
 """
 
 
 def _render_code_block(code_index: int, suggestion) -> str:
-    if suggestion.has_coverage_basis:
-        status_text = "Supported by note + policy"
-    else:
-        status_text = "Documentation-supported only"
-
     chip_parts: list[str] = []
     for span_index, span in enumerate(suggestion.supporting_note_spans):
         quote = _esc(span.text)
@@ -341,34 +445,6 @@ def _render_code_block(code_index: int, suggestion) -> str:
             )
     chips_html = "".join(chip_parts)
 
-    if suggestion.has_coverage_basis:
-        clause_parts: list[str] = []
-        policy_ids: list[str] = []
-        for clause in suggestion.cited_policy_clauses:
-            if clause.policy_identifier not in policy_ids:
-                policy_ids.append(clause.policy_identifier)
-            ref = f"{clause.policy_identifier} · cl. {clause.clause_number}"
-            clause_parts.append(
-                '<div class="clause-row">'
-                f'<span class="chip-mark" style="color: #00646f;">{_esc(ref)}</span>'
-                f'<span style="font-size: 13px; line-height: 1.55; color: {COLOR_TEXT_SECONDARY};">{_esc(clause.clause_text)}</span>'
-                "</div>"
-            )
-        policy_id_label = _esc(", ".join(policy_ids))
-        coverage_html = f"""
-    <div style="margin-top: 20px; display: flex; align-items: baseline; gap: 10px;">
-      <span class="overline">Cited policy clauses</span>
-      <span class="chip-mark" style="color: #00646f;">{policy_id_label}</span>
-    </div>
-    <div style="margin-top: 8px; border: 1px solid #f0dcdc; border-radius: 7px; overflow: hidden;">{"".join(clause_parts)}</div>
-"""
-    else:
-        coverage_html = f"""
-    <div style="margin-top: 20px; background: #fff0f0; border: 1px solid {COLOR_BANNER_BG}; border-radius: 7px; padding: 12px 14px; font-size: 13px; line-height: 1.55; color: {COLOR_ALERT_TEXT_DARK};">
-      <strong>No coverage basis:</strong> this code is supported by the note text, but no clause from the applicable payer policy was cited for it. Coverage is unconfirmed; review the payer policy manually.
-    </div>
-"""
-
     return f"""
   <div style="padding: 18px 22px 22px; border-bottom: 1px solid #f7e9e9;">
     <div style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
@@ -377,13 +453,12 @@ def _render_code_block(code_index: int, suggestion) -> str:
       <div style="font-size: 15px; font-weight: 600; color: {COLOR_TEXT};">{_esc(suggestion.description)}</div>
       <div style="margin-left: auto; font-size: 11.5px; font-weight: 600; color: #00646f; display: flex; align-items: center; gap: 6px;">
         <span style="width: 8px; height: 8px; border-radius: 50%; background: {COLOR_PRIMARY}; display: inline-block;"></span>
-        {_esc(status_text)}
+        Documentation-supported
       </div>
     </div>
     <p style="margin: 14px 0 0; font-size: 13.5px; line-height: 1.6; color: {COLOR_TEXT_SECONDARY};">{_esc(suggestion.rationale)}</p>
     <div class="overline" style="margin-top: 18px;">Supporting note spans · click to locate in note</div>
     <div style="display: flex; flex-direction: column; gap: 8px; margin-top: 10px;">{chips_html}</div>
-    {coverage_html}
   </div>
 """
 
@@ -569,6 +644,11 @@ def build_results_html(
             if span.is_located:
                 span_id = f"s{code_index}-{span_j}"
                 span_index.append((span_id, span.start_offset, span.end_offset))
+    for clause_index, clause in enumerate(view.clause_results):
+        for evidence_j, span in enumerate(clause.evidence):
+            if span.is_located:
+                span_id = f"c{clause_index}-{evidence_j}"
+                span_index.append((span_id, span.start_offset, span.end_offset))
 
     note_panel = _render_note_panel(note_text, span_index)
 
@@ -586,9 +666,11 @@ def build_results_html(
 <section style="display: flex; flex-direction: column; gap: 18px; min-width: 0; opacity: {results_opacity};">
   {sample_strip}
   {_render_hero(view)}
+  {_render_clauses_card(view)}
   {_render_codes_card(view)}
   {_render_gaps_card(view)}
   {_render_facts_card(view)}
+  {_render_narrative_card(view)}
   {_render_rejections_card(view)}
   {_render_provenance(view, audit_id)}
   <div style="font-size: 12px; color: #a4757c; text-align: center; padding: 4px 0 0;">{_esc(FOOTER_SENTENCE)}</div>
@@ -617,18 +699,19 @@ def results_height(view: RecommendationView, note_text: str) -> int:
     note_lines = note_text.count("\n") + 1
     left_height = 180 + note_lines * 23
 
-    right_height = 360
+    right_height = 380
     if view.is_sample:
         right_height = right_height + 100
     if len(view.code_suggestions) == 0:
         right_height = right_height + 140
     for suggestion in view.code_suggestions:
-        right_height = right_height + 300
+        right_height = right_height + 260
         right_height = right_height + len(suggestion.supporting_note_spans) * 48
-        if suggestion.has_coverage_basis:
-            right_height = right_height + len(suggestion.cited_policy_clauses) * 70
-        else:
-            right_height = right_height + 100
+    right_height = right_height + 110
+    for clause in view.clause_results:
+        right_height = right_height + 92 + len(clause.evidence) * 48
+    if view.model_coverage_rationale:
+        right_height = right_height + 140
     right_height = right_height + 120 + max(len(view.documentation_gaps), 1) * 64
     right_height = right_height + 110 + math.ceil(len(view.extracted_facts) / 2) * 42
     if len(view.verification_rejections) > 0:

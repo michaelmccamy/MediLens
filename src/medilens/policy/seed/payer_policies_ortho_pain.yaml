@@ -1,25 +1,24 @@
-# Curated payer medical-necessity policies for the ortho/pain beachhead.
-#
-# CLAUDE.md section 4 calls the payer policy layer the highest-value and
-# hardest layer, to be started narrow and manual. This seed covers a small
-# set of beachhead services (lumbar MRI, lumbar epidural steroid injection)
-# for two payers.
+# Curated payer medical-necessity policies for the ortho/pain beachhead,
+# in policy schema v2 (docs/policy-schema.md).
 #
 # IMPORTANT: the criteria below are SYNTHETIC, illustrative summaries written
 # for development against synthetic notes. They are NOT verbatim payer policy
-# text and must not be treated as authoritative coverage criteria. Real
-# policies (with their exact clause text, effective dates, and citations) get
-# curated per design partner before any production use. Commercial payer
-# policy text is proprietary and is not embedded here; the commercial entry is
-# a generic placeholder. Medicare criteria reference publicly available
-# coverage concepts (LCD/NCD style) but are still paraphrased, not quoted.
+# text and must not be treated as authoritative coverage criteria; every
+# policy carries source.authoritative: false. Real policies (exact clause
+# text, effective dates, citations) get curated per design partner before any
+# production use.
 #
-# Each criterion is phrased as a DOCUMENTATION requirement, so the reasoning
-# layer can check the note for sufficiency and cite the specific clause
-# (CLAUDE.md guardrail 4). Criteria never assert clinical facts; they state
-# what the record must show if clinically accurate (guardrail 1).
+# Structure per policy: required_facts declares the typed clinical facts the
+# deterministic rules consume (source: note facts are extracted by the model
+# with cited evidence and verified; source: history facts have no available
+# source in this deployment, so rules reading them defer to manual review,
+# fail closed). Each clause has a stable clause_id, an evaluation type
+# (deterministic, model_judged, hybrid, manual_review), and required: true
+# when it counts toward the overall determination. Overrides are expressed as
+# not_applicable_if_satisfied and are applied in code, never by the model.
 #
-# No em dashes anywhere (CLAUDE.md formatting rule).
+# Criteria never assert clinical facts; they state what the record must show
+# if clinically accurate (guardrail 1). No em dashes (formatting rule).
 
 specialty: "Orthopedics and pain medicine"
 
@@ -29,20 +28,96 @@ policies:
     effective_start: 2025-01-01
     effective_end: null
     service: "Lumbar MRI (advanced imaging of the lumbar spine)"
-    # Curated matching phrases: a requested service matches this policy when
-    # every word of any one phrase appears in the request. Keep phrases
-    # lowercase and specific enough not to match unrelated services.
     service_keywords:
       - "lumbar mri"
       - "mri"
       - "magnetic resonance imaging"
     source: "SYNTHETIC illustrative policy for development. Paraphrases public LCD/NCD coverage concepts; not authoritative."
-    criteria:
-      - "Documentation supports low back or radicular symptoms with a duration of at least 6 weeks, unless a red-flag indication below is present."
-      - "Documentation shows a completed trial of conservative therapy (for example physical therapy and pharmacologic management), unless a red-flag indication below is present."
-      - "Documentation records objective neurologic findings on examination (for example a positive straight-leg-raise, dermatomal sensory loss, motor weakness, or reflex change) supporting radiculopathy, or explains their absence."
-      - "A red-flag indication (suspected malignancy, infection, fracture, or cauda equina syndrome) is documented and, if present, overrides the duration and conservative-therapy requirements above."
-      - "The requested study has not been performed recently for the same indication without an interval change in clinical status."
+    structure:
+      schema_version: policy-v2
+      version: 2
+      source:
+        type: synthetic
+        authoritative: false
+        citation: "SYNTHETIC illustrative policy. Paraphrases public LCD/NCD coverage concepts; not authoritative payer text."
+      required_facts:
+        - key: symptom_duration
+          type: duration
+          unit: weeks
+          source: note
+          description: "How long the low back or radicular symptoms have been present, as documented."
+      # Upgrade path: a prior_mri_same_region history fact would let the
+      # not_recent_duplicate clause become deterministic once a claims or
+      # imaging history source exists. Until then it is judged from what the
+      # note itself states.
+      clauses:
+        - clause_id: symptom_duration
+          title: "Symptom duration and character"
+          text: >
+            Low back or radicular symptoms are documented with a duration of
+            at least 6 weeks, unless a red-flag indication is present.
+          evaluation: hybrid
+          required: true
+          not_applicable_if_satisfied: [red_flag]
+          rule: { op: min_duration, fact: symptom_duration, unit: weeks, minimum: 6 }
+          judgment:
+            question: "Are the documented symptoms low back or radicular in character?"
+            requires_evidence: true
+          source_ref: "SYNTHETIC clause. Illustrative."
+
+        - clause_id: conservative_therapy
+          title: "Conservative therapy trial"
+          text: >
+            A completed trial of conservative therapy (for example physical
+            therapy and pharmacologic management) is documented, unless a
+            red-flag indication is present.
+          evaluation: model_judged
+          required: true
+          not_applicable_if_satisfied: [red_flag]
+          judgment:
+            question: "Is a completed conservative-therapy trial documented in the note?"
+            requires_evidence: true
+          source_ref: "SYNTHETIC clause. Illustrative."
+
+        - clause_id: objective_findings
+          title: "Objective neurologic findings"
+          text: >
+            Objective neurologic findings on examination (for example a
+            positive straight-leg-raise, dermatomal sensory loss, motor
+            weakness, or reflex change) supporting radiculopathy are
+            documented, or their absence is explained.
+          evaluation: model_judged
+          required: true
+          judgment:
+            question: "Are objective neurologic findings supporting radiculopathy documented, or is their absence explained?"
+            requires_evidence: true
+          source_ref: "SYNTHETIC clause. Illustrative."
+
+        - clause_id: red_flag
+          title: "Red-flag override"
+          text: >
+            A red-flag indication (suspected malignancy, infection, fracture,
+            or cauda equina syndrome) is documented. When present it overrides
+            the duration and conservative-therapy requirements.
+          evaluation: model_judged
+          required: false
+          judgment:
+            question: "Is a red-flag indication (suspected malignancy, infection, fracture, or cauda equina syndrome) documented?"
+            requires_evidence: true
+          source_ref: "SYNTHETIC clause. Illustrative."
+
+        - clause_id: not_recent_duplicate
+          title: "No recent duplicate study"
+          text: >
+            The note states that no MRI of the same region was performed
+            recently for the same indication, or documents an interval change
+            in clinical status justifying a repeat study.
+          evaluation: model_judged
+          required: true
+          judgment:
+            question: "Does the note state that no recent prior MRI of this region was performed for this indication, or document an interval change in clinical status?"
+            requires_evidence: true
+          source_ref: "SYNTHETIC clause. Illustrative. Upgrade path: deterministic once an imaging-history source exists."
 
   - payer_name: National Commercial Payer A
     policy_identifier: SYN-LUMBAR-ESI-001
@@ -55,9 +130,134 @@ policies:
       - "esi"
       - "epidural"
     source: "SYNTHETIC placeholder policy for development. Not based on any specific commercial payer's proprietary policy text."
-    criteria:
-      - "Documentation supports radicular pain (radiculopathy or sciatica) correlating with an imaging or examination finding at the treated level."
-      - "Documentation shows a trial of conservative therapy of at least 4 weeks (for example physical therapy and pharmacologic management) without adequate relief."
-      - "Documentation records the current pain level and functional impairment used as the baseline for measuring response."
-      - "For a repeat injection, documentation records a meaningful and sustained response to the prior injection, including the degree and duration of relief."
-      - "No documented contraindication to the injection (for example active infection or uncorrected coagulopathy) is present."
+    structure:
+      schema_version: policy-v2
+      version: 2
+      source:
+        type: synthetic
+        authoritative: false
+        citation: "SYNTHETIC placeholder policy. Not based on any specific commercial payer's proprietary policy text."
+      required_facts:
+        - key: conservative_therapy_duration
+          type: duration
+          unit: weeks
+          source: note
+          description: "The documented duration of the conservative-therapy trial (for example physical therapy)."
+      clauses:
+        - clause_id: radicular_imaging_correlation
+          title: "Radicular pain with correlating finding"
+          text: >
+            Radicular pain (radiculopathy or sciatica) is documented and
+            correlates with an imaging or examination finding at the treated
+            level.
+          evaluation: model_judged
+          required: true
+          judgment:
+            question: "Is radicular pain documented, correlating with an imaging or examination finding at the treated level?"
+            requires_evidence: true
+          source_ref: "SYNTHETIC clause. Illustrative."
+
+        - clause_id: conservative_therapy
+          title: "Conservative therapy of at least 4 weeks"
+          text: >
+            A trial of conservative therapy of at least 4 weeks (for example
+            physical therapy and pharmacologic management) without adequate
+            relief is documented.
+          evaluation: hybrid
+          required: true
+          rule: { op: min_duration, fact: conservative_therapy_duration, unit: weeks, minimum: 4 }
+          judgment:
+            question: "Is a conservative-therapy trial without adequate relief documented?"
+            requires_evidence: true
+          source_ref: "SYNTHETIC clause. Illustrative."
+
+        - clause_id: baseline_function
+          title: "Baseline pain and function"
+          text: >
+            The current pain level and functional impairment are documented as
+            the baseline for measuring response to the injection.
+          evaluation: model_judged
+          required: true
+          judgment:
+            question: "Are a current pain level and functional impairment documented as a baseline for measuring response?"
+            requires_evidence: true
+          source_ref: "SYNTHETIC clause. Illustrative."
+
+        - clause_id: prior_injection_response
+          title: "Prior injection response (repeat injections)"
+          text: >
+            For a repeat injection, a meaningful and sustained response to the
+            prior injection is documented, including the degree and duration
+            of relief. For a first injection, the note states that no prior
+            epidural steroid injection was performed.
+          evaluation: model_judged
+          required: true
+          judgment:
+            question: "Does the note either document a meaningful, sustained response to a prior injection, or state that no prior epidural steroid injection was performed?"
+            requires_evidence: true
+          source_ref: "SYNTHETIC clause. Illustrative."
+
+        - clause_id: contraindication_absent
+          title: "No documented contraindication"
+          text: >
+            The note documents the absence of contraindications to the
+            injection (for example active infection or uncorrected
+            coagulopathy).
+          evaluation: model_judged
+          required: true
+          judgment:
+            question: "Does the note document the absence of contraindications (for example no active infection, no uncorrected coagulopathy)?"
+            requires_evidence: true
+          source_ref: "SYNTHETIC clause. Illustrative."
+
+  - payer_name: Medicare
+    policy_identifier: SYN-LUMBAR-RFA-001
+    effective_start: 2025-01-01
+    effective_end: null
+    service: "Radiofrequency ablation, lumbar facet"
+    service_keywords:
+      - "radiofrequency ablation"
+      - "rfa"
+      - "facet ablation"
+      - "medial branch"
+    source: "SYNTHETIC illustrative policy for development. Not authoritative."
+    structure:
+      schema_version: policy-v2
+      version: 1
+      source:
+        type: synthetic
+        authoritative: false
+        citation: "SYNTHETIC illustrative policy. Not authoritative payer text."
+      required_facts:
+        - key: mbb_relief_percent
+          type: count
+          unit: percent
+          source: note
+          description: "The documented percentage relief from the diagnostic medial branch block."
+        - key: rfa_same_level_12mo
+          type: count
+          source: history
+          description: "Radiofrequency ablations at the same level in the rolling 12-month period, from claims history."
+      clauses:
+        - clause_id: diagnostic_block
+          title: "Positive diagnostic medial branch block"
+          text: >
+            At least one diagnostic medial branch block with documented relief
+            of at least 50 percent is recorded.
+          evaluation: hybrid
+          required: true
+          rule: { op: min_count, fact: mbb_relief_percent, minimum: 50 }
+          judgment:
+            question: "Is a diagnostic medial branch block with documented relief recorded?"
+            requires_evidence: true
+          source_ref: "SYNTHETIC clause. Illustrative."
+
+        - clause_id: frequency_limit
+          title: "Frequency limit"
+          text: >
+            No more than two radiofrequency ablation procedures at the same
+            level in a rolling 12-month period.
+          evaluation: deterministic
+          required: true
+          rule: { op: frequency_limit, fact: rfa_same_level_12mo, maximum: 2, window_months: 12 }
+          source_ref: "SYNTHETIC clause. Illustrative. Requires claims history; defers to manual review until a history source exists."

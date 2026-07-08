@@ -24,7 +24,14 @@ class EvalCase:
     """One labeled evaluation case.
 
     note_text is already normalized. expected_denied is None for refusal cases
-    (denial is not defined when the system refuses before assessing coverage).
+    (denial is not defined when the system refuses before assessing coverage)
+    and for manual-review cases (excluded from denial metrics by decision 4).
+
+    expected_determination is the gold computed determination (meets_criteria,
+    insufficient_documentation, does_not_meet, manual_review) or None when the
+    case expects a refusal. expected_clause_statuses maps clause_id to the
+    gold status for the clauses this case intentionally targets, so a
+    regression that lets a specific clause silently pass is caught.
     """
 
     case_id: str
@@ -35,6 +42,8 @@ class EvalCase:
     expected_codes: frozenset[str]
     expected_denied: bool | None
     expect_refusal: bool
+    expected_determination: str | None
+    expected_clause_statuses: dict[str, str]
     label_rationale: str
 
 
@@ -82,6 +91,11 @@ def parse_cases_file(case_path: Path, notes_dir: Path) -> list[EvalCase]:
         expected_codes = frozenset(raw_case.get("expected_codes", []) or [])
         expected_denied = raw_case.get("expected_denied", None)
         expect_refusal = bool(raw_case.get("expect_refusal", False))
+        expected_determination = raw_case.get("expected_determination", None)
+        raw_clause_statuses = raw_case.get("expected_clause_statuses", {}) or {}
+        expected_clause_statuses: dict[str, str] = {}
+        for clause_id, status in raw_clause_statuses.items():
+            expected_clause_statuses[str(clause_id)] = str(status)
         label_rationale = str(raw_case.get("label_rationale", "")).strip()
 
         cases.append(
@@ -94,6 +108,8 @@ def parse_cases_file(case_path: Path, notes_dir: Path) -> list[EvalCase]:
                 expected_codes=expected_codes,
                 expected_denied=expected_denied,
                 expect_refusal=expect_refusal,
+                expected_determination=expected_determination,
+                expected_clause_statuses=expected_clause_statuses,
                 label_rationale=label_rationale,
             )
         )

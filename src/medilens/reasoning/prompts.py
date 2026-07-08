@@ -6,9 +6,9 @@ template is a file named <name>_<version>.txt under src/medilens/prompts/; the
 version travels with the loaded template and ends up in the audit record.
 
 The template file is the static system prompt. Everything per-request (note,
-metadata, retrieved codes and policies) is assembled into the user content by
-build_user_content, so the system prompt stays byte-identical across requests,
-which is also what makes it cacheable later.
+metadata, retrieved codes, and the structured policies) is assembled into the
+user content by build_user_content, so the system prompt stays byte-identical
+across requests, which is also what makes it cacheable later.
 """
 
 import datetime
@@ -16,15 +16,17 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from medilens.db.models import CodeSetEntry, PayerPolicy
+from medilens.policy.structure import FACT_SOURCE_NOTE, PolicyStructure
 
 _PROMPTS_DIR = Path(__file__).resolve().parent.parent / "prompts"
 
 DEFAULT_VALIDATION_PROMPT_NAME = "validation"
-# v2: clause citations may legitimately be empty when no provided clause
-# applies to a code (coverage decoupling); v1 required a clause per code.
+# v3: the policy-v2 contract. The model extracts typed clinical facts and
+# judges clauses by clause_id with cited evidence; it no longer emits a
+# denial-risk score or per-code clause citations (both are computed in code).
 # Old template files are never edited or deleted, so any audit record's
 # prompt_template_version can be reproduced exactly.
-DEFAULT_VALIDATION_PROMPT_VERSION = "v2"
+DEFAULT_VALIDATION_PROMPT_VERSION = "v3"
 
 
 @dataclass(frozen=True)
@@ -61,15 +63,21 @@ def build_user_content(
     date_of_service: datetime.date,
     payer_name: str,
     candidate_codes: list[CodeSetEntry],
-    policies: list[PayerPolicy],
+    policies: list[tuple[PayerPolicy, PolicyStructure]],
 ) -> str:
-    """Assemble the per-request user content the system prompt expects.
+    """Assemble the per-request user content the v3 system prompt expects.
 
     The candidate codes and policies come from date-resolved retrieval, so the
     model reasons over exactly the rules in force on the date of service and
-    nothing from its training memory (CLAUDE.md section 4). Section labels here
-    must match the ones the system prompt references (CANDIDATE CODES, PAYER
-    POLICIES); change them together or the prompt contract silently breaks.
+    nothing from its training memory (CLAUDE.md section 4). Section labels
+    here must match the ones the system prompt references (CANDIDATE CODES,
+    POLICY CONTEXT, FACTS TO EXTRACT, CLAUSES TO ASSESS); change them together
+    or the prompt contract silently breaks.
+
+    Only note-sourced facts are requested from the model. History-sourced
+    facts have no available source in this deployment; the rule engine
+    resolves them to manual review in code, and asking the model for them
+    would invite fabrication.
     """
     lines: list[str] = []
 
@@ -88,12 +96,44 @@ def build_user_content(
         lines.append(f"- {entry.code} ({entry.code_system}): {entry.description}")
     lines.append("")
 
-    lines.append("PAYER POLICIES (cite clauses by number):")
-    for policy in policies:
+    for policy_row, structure in policies:
         lines.append(
-            f"Policy {policy.policy_identifier} ({policy.payer_name}):"
+            f"POLICY CONTEXT for {policy_row.policy_identifier} "
+            f"({policy_row.payer_name}):"
         )
-        lines.append(policy.policy_text)
+        lines.append(policy_row.policy_text)
         lines.append("")
+
+        note_facts: list = []
+        for fact_spec in structure.required_facts:
+            if fact_spec.source == FACT_SOURCE_NOTE:
+                note_facts.append(fact_spec)
+        if len(note_facts) > 0:
+            lines.append(
+                f"FACTS TO EXTRACT for {policy_row.policy_identifier} "
+                "(omit any the note does not state):"
+            )
+            for fact_spec in note_facts:
+                unit_text = f" in {fact_spec.unit}" if fact_spec.unit else ""
+                lines.append(
+                    f"- {fact_spec.key} ({fact_spec.type}{unit_text}): "
+                    f"{fact_spec.description}"
+                )
+            lines.append("")
+
+        judgment_clauses: list = []
+        for clause in structure.clauses:
+            if clause.needs_judgment:
+                judgment_clauses.append(clause)
+        if len(judgment_clauses) > 0:
+            lines.append(
+                f"CLAUSES TO ASSESS for {policy_row.policy_identifier} "
+                "(one judgment each, by clause_id):"
+            )
+            for clause in judgment_clauses:
+                lines.append(
+                    f"- clause_id {clause.clause_id}: {clause.judgment.question}"
+                )
+            lines.append("")
 
     return "\n".join(lines)

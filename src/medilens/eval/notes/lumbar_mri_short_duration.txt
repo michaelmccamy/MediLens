@@ -1,0 +1,20 @@
+SYNTHETIC NOTE. Not a real patient. Evaluation fixture only.
+
+Chief complaint: Low back pain radiating to the left leg, 3 weeks duration.
+
+History of present illness: Acute onset low back pain radiating into the left
+posterior thigh, 3 weeks ago after lifting. Denies saddle anesthesia, bowel or
+bladder dysfunction, fever, or unexplained weight loss.
+
+Conservative care to date: Completed 2 weeks of physical therapy so far and
+taking naproxen with partial relief.
+
+Physical exam: Positive straight leg raise on the left at 50 degrees.
+Diminished sensation in the left L5 dermatome. Strength 5/5 throughout.
+
+Assessment: Lumbar radiculopathy, left L5 distribution, of 3 weeks duration.
+
+Imaging history: No prior lumbar MRI or other advanced imaging has been
+performed for this episode.
+
+Plan: Order lumbar MRI without contrast.

@@ -40,8 +40,16 @@ class RecommendationRecord:
     extracted_facts: Any
     recommended_codes: Any
     cited_note_spans: Any
+    # Under policy schema v2 this field holds the evaluated clause results
+    # (policy_identifier, clause_id, status, decided_by), which are the
+    # coverage citation: they say exactly which rule or judgment produced the
+    # determination.
     cited_policy_clauses: Any
     denial_risk_score: float
+    # The computed overall determination (schema v2): meets_criteria,
+    # does_not_meet, insufficient_documentation, or manual_review. Derived in
+    # code from clause statuses, never taken from the model.
+    coverage_determination: str
     model_name: str
     model_version: str
     prompt_template_version: str
@@ -85,6 +93,7 @@ def write_recommendation(
         cited_note_spans_json=_to_json(record.cited_note_spans),
         cited_policy_clauses_json=_to_json(record.cited_policy_clauses),
         denial_risk_score=record.denial_risk_score,
+        coverage_determination=record.coverage_determination,
         model_name=record.model_name,
         model_version=record.model_version,
         prompt_template_version=record.prompt_template_version,
@@ -130,44 +139,72 @@ def _reject_oversized_input_reference(record: RecommendationRecord) -> None:
         )
 
 
+# The determinations and clause statuses the store accepts (policy schema v2).
+# Kept here as an independent copy so the writer is a self-contained guardrail
+# even if the evaluator changes: a record with an undeclared or unknown
+# coverage state is refused, never stored.
+_ALLOWED_DETERMINATIONS = frozenset(
+    {
+        "meets_criteria",
+        "does_not_meet",
+        "insufficient_documentation",
+        "manual_review",
+    }
+)
+_ALLOWED_CLAUSE_STATUSES = frozenset(
+    {
+        "satisfied",
+        "not_satisfied",
+        "insufficient_documentation",
+        "contradictory_documentation",
+        "not_applicable",
+        "manual_review",
+    }
+)
+
+
 def _reject_ungrounded(record: RecommendationRecord) -> None:
-    """Fail loudly if recommended codes lack grounding or hide coverage state.
+    """Fail loudly if the record lacks grounding or a declared coverage state.
 
-    CLAUDE.md guardrail 4 forbids freeform code guessing. A record with NO
-    recommended codes is legitimate and storable; "the note does not support a
-    code" is itself an auditable finding. When codes exist:
+    CLAUDE.md guardrail 4 forbids freeform code guessing, and policy schema v2
+    requires coverage to be a computed, declared determination backed by
+    clause results. A record with NO recommended codes is legitimate and
+    storable; "the note does not support a code" is itself an auditable
+    finding. What is never storable:
 
-    - There must be cited note spans (documentation support is never optional).
-    - Every code entry must state has_coverage_basis explicitly. Coverage and
-      documentation support are decoupled, so "no coverage basis" is a valid
-      state, but it must be declared, never implied by absence.
-    - A code claiming a coverage basis must actually have a clause cited for
-      it in cited_policy_clauses.
+    - codes without cited note spans (documentation support is not optional);
+    - a missing or unknown coverage_determination (coverage must be declared,
+      never implied);
+    - a determination with no clause results, or clause results whose status
+      is not a known clause status (the determination must be reconstructable
+      from the stored clause statuses, guardrail 7).
     """
-    if not record.recommended_codes:
-        return
-    if not record.cited_note_spans:
+    if record.recommended_codes and not record.cited_note_spans:
         raise ValueError(
             "recommendation has codes but no cited note spans; guardrail 4 "
             "requires a supporting note span for every recommended code"
         )
 
-    codes_with_clauses = set()
-    if isinstance(record.cited_policy_clauses, list):
-        for clause_entry in record.cited_policy_clauses:
-            if isinstance(clause_entry, dict) and "code" in clause_entry:
-                codes_with_clauses.add(clause_entry["code"])
+    if record.coverage_determination not in _ALLOWED_DETERMINATIONS:
+        raise ValueError(
+            f"coverage_determination {record.coverage_determination!r} is not "
+            "a declared determination; coverage must be computed and declared, "
+            "never implied"
+        )
 
-    for code_entry in record.recommended_codes:
-        if not isinstance(code_entry, dict) or "has_coverage_basis" not in code_entry:
+    if not isinstance(record.cited_policy_clauses, list) or (
+        len(record.cited_policy_clauses) == 0
+    ):
+        raise ValueError(
+            "recommendation has no clause results; the determination must be "
+            "reconstructable from stored clause statuses (guardrail 7)"
+        )
+    for clause_entry in record.cited_policy_clauses:
+        if not isinstance(clause_entry, dict):
+            raise ValueError("clause results must be structured entries")
+        status = clause_entry.get("status")
+        if status not in _ALLOWED_CLAUSE_STATUSES:
             raise ValueError(
-                "every recommended code must state has_coverage_basis "
-                "explicitly; coverage must be declared, never implied"
+                f"clause result has unknown status {status!r}; refusing to "
+                "store an unreconstructable determination"
             )
-        if code_entry["has_coverage_basis"]:
-            if code_entry.get("code") not in codes_with_clauses:
-                raise ValueError(
-                    f"code {code_entry.get('code')!r} claims a coverage basis "
-                    "but cites no policy clause; guardrail 4 requires the "
-                    "specific clause used"
-                )

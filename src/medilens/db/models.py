@@ -53,6 +53,10 @@ class PayerPolicy(Base):
     service: Mapped[str] = mapped_column(String(256), default="")
     service_keywords: Mapped[str] = mapped_column(String(256), default="")
     policy_text: Mapped[str]
+    # Canonical JSON of the policy-v2 structure (clauses, rules, facts). Empty
+    # for rows ingested before schema v2; such rows cannot be evaluated and the
+    # pipeline fails loudly if the newest version of a policy lacks structure.
+    structure_json: Mapped[str] = mapped_column(default="")
     effective_start: Mapped[datetime.date]
     effective_end: Mapped[datetime.date | None]
     source: Mapped[str] = mapped_column(String(256))
@@ -78,6 +82,11 @@ class Recommendation(Base):
     cited_note_spans_json: Mapped[str]
     cited_policy_clauses_json: Mapped[str]
     denial_risk_score: Mapped[float]
+    # The computed coverage determination (meets_criteria, does_not_meet,
+    # insufficient_documentation, manual_review). Derived in code from clause
+    # statuses, never taken from the model (policy schema v2). Empty for rows
+    # written before schema v2.
+    coverage_determination: Mapped[str] = mapped_column(String(64), default="")
     model_name: Mapped[str] = mapped_column(String(128))
     model_version: Mapped[str] = mapped_column(String(128))
     prompt_template_version: Mapped[str] = mapped_column(String(64))

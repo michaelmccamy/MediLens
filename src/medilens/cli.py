@@ -201,6 +201,33 @@ def _print_outcome(outcome: ValidationOutcome, recommendation_id: int) -> None:
     print()
 
     verified = outcome.verified
+    assessment = outcome.assessment
+
+    print(f"coverage determination: {assessment.determination}")
+    if assessment.determination == "manual_review":
+        print(
+        "  NEEDS HUMAN REVIEW: at least one required clause depends on "
+        "information this tool cannot assess (for example claims history). "
+        "This is not a denial prediction."
+        )
+    print(f"denial_risk_score (computed from clause statuses): "
+          f"{assessment.denial_risk_score:.2f}")
+    print(f"  {assessment.determination_rationale}")
+    print()
+
+    print("clause results:")
+    for clause_result in assessment.clause_results:
+        print(
+            f"  [{clause_result.status}] {clause_result.policy_identifier}."
+            f"{clause_result.clause_id} (decided by {clause_result.decided_by}): "
+            f"{clause_result.detail}"
+        )
+        for span in clause_result.evidence:
+            print(
+                f'    evidence [{span.start_offset}:{span.end_offset}]: "{span.text}"'
+            )
+    print()
+
     if len(verified.code_recommendations) == 0:
         print("No supported codes found in the documentation.")
     for recommendation in verified.code_recommendations:
@@ -213,17 +240,6 @@ def _print_outcome(outcome: ValidationOutcome, recommendation_id: int) -> None:
             print(
                 f'  note span [{span.start_offset}:{span.end_offset}]: "{span.text}"'
             )
-        for clause in recommendation.cited_clauses:
-            print(
-                f"  policy clause: {clause.policy_identifier} #{clause.clause_number}: "
-                f"{clause.clause_text}"
-            )
-        if not recommendation.has_coverage_basis:
-            print(
-                "  coverage: NO coverage basis cited from the applicable "
-                "policy. This code is documentation-supported only; review "
-                "the payer policy manually before relying on it for coverage."
-            )
         print()
 
     if len(verified.documentation_gaps) > 0:
@@ -232,13 +248,17 @@ def _print_outcome(outcome: ValidationOutcome, recommendation_id: int) -> None:
             print(f"  - {gap}")
         print()
 
-    print(f"denial_risk_score: {verified.denial_risk_score:.2f}")
-    print(f"denial_risk_rationale: {verified.denial_risk_rationale}")
-    print()
+    if verified.coverage_rationale:
+        print(
+            "model narrative (prose only; the determination and score above "
+            "are computed from clause statuses, not from this text):"
+        )
+        print(f"  {verified.coverage_rationale}")
+        print()
 
     if len(verified.rejections) > 0:
-        # Surface, never hide, what the model produced that failed grounding.
-        print("dropped by verification (not shown above, not stored as codes):")
+        # Surface, never hide, what the model produced that failed a check.
+        print("dropped or downgraded by verification:")
         for rejection in verified.rejections:
             print(f"  - {rejection}")
         print()

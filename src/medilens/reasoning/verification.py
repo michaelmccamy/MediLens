@@ -1,52 +1,58 @@
-"""Code-side grounding verification of model validation output.
+"""Code-side verification of model validation output (policy schema v2).
 
 The prompt instructs the model to ground everything, but instructions are not
 guarantees. This module re-checks every claim mechanically before anything is
-shown to a coder or persisted, enforcing CLAUDE.md guardrails in code:
+shown to a coder, evaluated, or persisted, enforcing CLAUDE.md guardrails and
+the policy-v2 verifier rules (docs/policy-schema.md section 10) in code:
 
-- Guardrail 1 (no fabricated facts): every extracted fact's note span and every
-  supporting span must appear verbatim in the note. A span that does not locate
-  is treated as fabrication.
-- Guardrail 4 (grounding and provenance): every recommended code must be in the
-  date-resolved candidate set (no freeform code guessing) and must carry at
-  least one located note span. Cited policy clauses must exist in the retrieved
-  policies; invalid citations are dropped. Documentation support and coverage
-  basis are decoupled: a supported code whose clause citations all fail
-  verification survives with has_coverage_basis False, an explicit state every
-  surface renders, rather than being discarded or silently implying coverage.
-- Guardrail 2 (no upcoding): the enforceable proxy today is that a code without
-  located documentation support is dropped. Payment-aware ranking needs fee
-  schedule data the MVP does not have; when that lands, the check belongs here.
-- Guardrail 3 (human in the loop) via guardrail 1 phrasing: documentation gaps
-  must be conditional on clinical accuracy.
+- Guardrail 1 (no fabricated facts): every cited span, every fact evidence
+  string, and every judgment evidence string must appear verbatim in the note.
+  A span that does not locate is dropped and treated as absent.
+- Guardrail 4 (grounding): every recommended code must be in the date-resolved
+  candidate set and carry at least one located note span.
+- No satisfied without evidence: a clause judgment asserting satisfied,
+  not_satisfied, or contradictory_documentation with zero verifiable evidence
+  spans is DOWNGRADED to insufficient_documentation. The model cannot talk a
+  clause into passing without proof.
+- Facts verify or drop: a clinical fact whose evidence does not locate, whose
+  key was not requested, or whose value does not parse as its declared type is
+  dropped and treated as absent, which triggers the fail-closed rule path.
+- The model is not asked for statuses on deterministic clauses; if it supplies
+  a judgment for one (or for an unknown clause), the judgment is ignored with
+  a recorded reason.
 
-Verification is per-item, not all-or-nothing. A single fact, code, span, clause,
-or gap that fails its check is DROPPED, and the reason is recorded in the
-returned rejections list; the grounded remainder survives. This is not silent
-guessing (CLAUDE.md section 7): every drop is surfaced to the reviewer and
-written to the audit record, and nothing ungrounded is ever emitted. If all
-codes are dropped, the outcome is an honest "no supported codes" plus the
-reasons, which is a valid finding (guardrail 4).
+Verification is per-item: each dropped or downgraded item is recorded in the
+rejections list and the grounded remainder survives. Nothing ungrounded is
+ever emitted, and every drop is surfaced to the reviewer and the audit record.
 
-One structural failure is still a hard stop: a denial_risk_score outside the
-0.0 to 1.0 scale means the model did not follow the schema semantics, which
-casts doubt on the assessment as a whole, so it raises GroundingError.
-
-Rejection reasons name the offending code or field but never include note
-content, since they end up in logs and the audit store (guardrail 6).
+Rejection reasons name the offending key, clause, or code but never include
+note content, since they end up in logs and the audit store (guardrail 6).
 """
 
-import re
+import datetime
 from dataclasses import dataclass
 from typing import Any
 
 from medilens.db.models import CodeSetEntry, PayerPolicy
-
-# Matches the numbered clause lines produced by policy.ingest.render_policy_text.
-_CLAUSE_LINE_PATTERN = re.compile(r"^(\d+)\.\s+(.*)$")
+from medilens.policy.structure import FACT_SOURCE_NOTE, PolicyStructure
 
 # The conditional phrasing guardrail 1 requires of every documentation gap.
 _CONDITIONAL_PHRASE = "clinically accurate"
+
+# Statuses the model may assert for a judgment (mirrors the schema enum).
+_ASSERTABLE_STATUSES = frozenset(
+    {
+        "satisfied",
+        "not_satisfied",
+        "insufficient_documentation",
+        "contradictory_documentation",
+    }
+)
+
+# Statuses that require at least one located evidence span (section 9).
+_EVIDENCE_REQUIRED_STATUSES = frozenset(
+    {"satisfied", "not_satisfied", "contradictory_documentation"}
+)
 
 
 class GroundingError(Exception):
@@ -69,22 +75,31 @@ class VerifiedFact:
 
 
 @dataclass(frozen=True)
-class VerifiedClauseCitation:
+class VerifiedClinicalFact:
+    """A typed clinical fact with verified evidence, ready for the rule engine."""
+
+    key: str
+    value: Any  # float for duration/count, bool for boolean, date for date
+    unit: str | None
+    evidence: LocatedSpan
+
+
+@dataclass(frozen=True)
+class VerifiedClauseJudgment:
+    """A model judgment that passed the evidence requirements."""
+
     policy_identifier: str
-    clause_number: int
-    clause_text: str
+    clause_id: str
+    status: str
+    evidence: tuple[LocatedSpan, ...]
 
 
 @dataclass(frozen=True)
 class VerifiedCodeRecommendation:
-    """One recommendation with verified documentation support.
+    """One code recommendation with verified documentation support.
 
-    Documentation support (located note spans) and coverage basis (verified
-    policy clauses) are separate questions. A code with spans but no valid
-    clause is still a useful, honest finding: "supported by the note; no
-    coverage basis cited". has_coverage_basis makes that state explicit so
-    every surface (UI, CLI, audit record) must confront it rather than
-    implying coverage.
+    Coverage is policy-level under schema v2 (clause statuses and a computed
+    determination), so codes no longer carry per-code clause citations.
     """
 
     code: str
@@ -92,27 +107,23 @@ class VerifiedCodeRecommendation:
     description: str
     rationale: str
     supporting_spans: list[LocatedSpan]
-    cited_clauses: list[VerifiedClauseCitation]
-
-    @property
-    def has_coverage_basis(self) -> bool:
-        return len(self.cited_clauses) > 0
 
 
 @dataclass(frozen=True)
 class VerifiedValidation:
-    """The verified output: safe to display and persist.
+    """The verified model output: safe to display, evaluate, and persist.
 
-    rejections records every item dropped during verification, with a
-    PHI-free reason, so a reviewer and the audit trail can see what the model
-    produced that did not survive grounding.
+    rejections records every item dropped or downgraded during verification,
+    with a PHI-free reason, so a reviewer and the audit trail can see what the
+    model produced that did not survive.
     """
 
     extracted_facts: list[VerifiedFact]
+    clinical_facts: dict[str, VerifiedClinicalFact]
+    clause_judgments: dict[tuple[str, str], VerifiedClauseJudgment]
     code_recommendations: list[VerifiedCodeRecommendation]
     documentation_gaps: list[str]
-    denial_risk_score: float
-    denial_risk_rationale: str
+    coverage_rationale: str
     rejections: list[str]
 
 
@@ -185,46 +196,76 @@ def _try_locate_span(note_text: str, span_text: str) -> LocatedSpan | None:
     )
 
 
-def _build_clause_lookup(
-    policies: list[PayerPolicy],
-) -> dict[str, dict[int, str]]:
-    """Map policy_identifier to {clause_number: clause_text} from policy_text.
+def _parse_fact_value(raw_value: str, fact_type: str) -> Any | None:
+    """Parse a fact value string as its declared type, or None if it does not.
 
-    Clause numbers are parsed from the numbered lines render_policy_text
-    produces. When multiple in-force versions of the same identifier exist,
-    the most recently ingested one wins, matching what a coder would be shown.
+    The model is instructed to return plain value strings; anything that does
+    not parse is treated as absent (fail closed), never coerced creatively.
     """
-    ordered_policies = sorted(policies, key=lambda policy: policy.retrieved_at)
-    lookup: dict[str, dict[int, str]] = {}
-    for policy in ordered_policies:
-        clauses: dict[int, str] = {}
-        for line in policy.policy_text.splitlines():
-            match = _CLAUSE_LINE_PATTERN.match(line.strip())
-            if match is not None:
-                clause_number = int(match.group(1))
-                clauses[clause_number] = match.group(2)
-        lookup[policy.policy_identifier] = clauses
-    return lookup
+    text = str(raw_value).strip()
+    if fact_type in ("duration", "count"):
+        # Tolerate a trailing percent sign on counts expressed as percentages.
+        if text.endswith("%"):
+            text = text[:-1].strip()
+        try:
+            return float(text)
+        except ValueError:
+            return None
+    if fact_type == "boolean":
+        lowered = text.lower()
+        if lowered == "true":
+            return True
+        if lowered == "false":
+            return False
+        return None
+    if fact_type == "date":
+        try:
+            return datetime.date.fromisoformat(text)
+        except ValueError:
+            return None
+    return None
 
 
 def verify_validation_output(
     output: Any,
     note_text: str,
     candidate_codes: list[CodeSetEntry],
-    policies: list[PayerPolicy],
+    policies: list[tuple[PayerPolicy, PolicyStructure]],
 ) -> VerifiedValidation:
     """Re-check every claim in the model output against ground truth.
 
     output is the parsed JSON from ModelClient.create_structured. The schema
     guarantees its shape; this function checks its truth. Returns the verified
-    result or raises GroundingError, in which case nothing may be displayed or
-    persisted.
+    result; dropped and downgraded items are listed in rejections.
     """
     candidate_by_code: dict[str, CodeSetEntry] = {}
     for entry in candidate_codes:
         candidate_by_code[entry.code] = entry
 
-    clause_lookup = _build_clause_lookup(policies)
+    # Combined note-fact specs and judgment-bearing clauses across the
+    # matched policies. Fact keys must not conflict across policies.
+    note_fact_specs: dict[str, Any] = {}
+    for _policy_row, structure in policies:
+        for fact_spec in structure.required_facts:
+            if fact_spec.source != FACT_SOURCE_NOTE:
+                continue
+            existing = note_fact_specs.get(fact_spec.key)
+            if existing is not None and existing.type != fact_spec.type:
+                raise GroundingError(
+                    f"fact key {fact_spec.key!r} is declared with conflicting "
+                    "types by two matched policies; policies cannot be "
+                    "evaluated together"
+                )
+            note_fact_specs[fact_spec.key] = fact_spec
+
+    judgment_clauses: dict[tuple[str, str], Any] = {}
+    for policy_row, structure in policies:
+        for clause in structure.clauses:
+            if clause.needs_judgment:
+                judgment_clauses[(policy_row.policy_identifier, clause.clause_id)] = (
+                    clause
+                )
+
     rejections: list[str] = []
 
     verified_facts: list[VerifiedFact] = []
@@ -237,6 +278,100 @@ def verify_validation_output(
             )
             continue
         verified_facts.append(VerifiedFact(fact=fact_item["fact"], span=span))
+
+    # Clinical facts: verify key, type, and evidence; drop anything unproven.
+    clinical_facts: dict[str, VerifiedClinicalFact] = {}
+    for fact_item in output["clinical_facts"]:
+        key = fact_item["key"]
+        spec = note_fact_specs.get(key)
+        if spec is None:
+            rejections.append(
+                f"ignored clinical fact {key}: not a requested note-sourced "
+                "fact for any matched policy (the model must not invent or "
+                "supply history-sourced values)"
+            )
+            continue
+        if key in clinical_facts:
+            rejections.append(
+                f"ignored a duplicate clinical fact {key}: first verified "
+                "value wins"
+            )
+            continue
+        value = _parse_fact_value(fact_item["value"], spec.type)
+        if value is None:
+            rejections.append(
+                f"dropped clinical fact {key}: value did not parse as "
+                f"{spec.type}; treated as undocumented (fail closed)"
+            )
+            continue
+        evidence = _try_locate_span(note_text, fact_item["evidence"])
+        if evidence is None:
+            rejections.append(
+                f"dropped clinical fact {key}: its evidence was not found "
+                "verbatim in the note; treated as undocumented (fail closed, "
+                "guardrail 1)"
+            )
+            continue
+        clinical_facts[key] = VerifiedClinicalFact(
+            key=key, value=value, unit=spec.unit, evidence=evidence
+        )
+
+    # Clause judgments: verify the clause exists and takes a judgment, locate
+    # evidence, and enforce the no-satisfied-without-evidence rule.
+    clause_judgments: dict[tuple[str, str], VerifiedClauseJudgment] = {}
+    for judgment_item in output["clause_judgments"]:
+        judgment_key = (
+            judgment_item["policy_identifier"],
+            judgment_item["clause_id"],
+        )
+        clause_label = f"{judgment_key[0]}.{judgment_key[1]}"
+        if judgment_key not in judgment_clauses:
+            rejections.append(
+                f"ignored a judgment for {clause_label}: not a "
+                "judgment-bearing clause of any matched policy (deterministic "
+                "and manual-review clauses are decided in code)"
+            )
+            continue
+        if judgment_key in clause_judgments:
+            rejections.append(
+                f"ignored a duplicate judgment for {clause_label}: first "
+                "verified judgment wins"
+            )
+            continue
+        status = judgment_item["status"]
+        if status not in _ASSERTABLE_STATUSES:
+            # The schema enum should prevent this; fail closed if it appears.
+            rejections.append(
+                f"downgraded judgment for {clause_label}: status {status!r} "
+                "is not assertable by the model"
+            )
+            status = "insufficient_documentation"
+
+        located_evidence: list[LocatedSpan] = []
+        for evidence_text in judgment_item["evidence"]:
+            located = _try_locate_span(note_text, evidence_text)
+            if located is None:
+                rejections.append(
+                    f"dropped an evidence span for {clause_label}: not found "
+                    "verbatim in the note (guardrail 1)"
+                )
+                continue
+            located_evidence.append(located)
+
+        if status in _EVIDENCE_REQUIRED_STATUSES and len(located_evidence) == 0:
+            rejections.append(
+                f"downgraded judgment for {clause_label}: {status} requires "
+                "verified evidence and none survived; recorded as "
+                "insufficient_documentation (no satisfied without evidence)"
+            )
+            status = "insufficient_documentation"
+
+        clause_judgments[judgment_key] = VerifiedClauseJudgment(
+            policy_identifier=judgment_key[0],
+            clause_id=judgment_key[1],
+            status=status,
+            evidence=tuple(located_evidence),
+        )
 
     verified_recommendations: list[VerifiedCodeRecommendation] = []
     for recommendation in output["code_recommendations"]:
@@ -272,36 +407,6 @@ def verify_validation_output(
             )
             continue
 
-        cited_clauses: list[VerifiedClauseCitation] = []
-        for clause_citation in recommendation["cited_policy_clauses"]:
-            policy_identifier = clause_citation["policy_identifier"]
-            clause_number = clause_citation["clause_number"]
-            policy_clauses = clause_lookup.get(policy_identifier)
-            if policy_clauses is None:
-                rejections.append(
-                    f"dropped a citation for code {code}: policy "
-                    f"{policy_identifier} is not in the retrieved policy set "
-                    "(guardrail 4)"
-                )
-                continue
-            clause_text = policy_clauses.get(clause_number)
-            if clause_text is None:
-                rejections.append(
-                    f"dropped a citation for code {code}: clause {clause_number} "
-                    f"does not exist in policy {policy_identifier} (guardrail 4)"
-                )
-                continue
-            cited_clauses.append(
-                VerifiedClauseCitation(
-                    policy_identifier=policy_identifier,
-                    clause_number=clause_number,
-                    clause_text=clause_text,
-                )
-            )
-        # Documentation support and coverage basis are decoupled: a code with
-        # located spans but no valid clause survives, explicitly flagged via
-        # has_coverage_basis, instead of being discarded. The reviewer decides
-        # what a supported-but-uncovered code means for the claim.
         verified_recommendations.append(
             VerifiedCodeRecommendation(
                 code=code,
@@ -309,7 +414,6 @@ def verify_validation_output(
                 description=candidate.description,
                 rationale=recommendation["rationale"],
                 supporting_spans=supporting_spans,
-                cited_clauses=cited_clauses,
             )
         )
 
@@ -323,19 +427,12 @@ def verify_validation_output(
             continue
         documentation_gaps.append(gap)
 
-    # Structural hard stop: an out-of-scale risk score means the model did not
-    # follow the schema semantics, so the whole assessment is untrustworthy.
-    denial_risk_score = output["denial_risk_score"]
-    if not 0.0 <= denial_risk_score <= 1.0:
-        raise GroundingError(
-            f"denial_risk_score {denial_risk_score} is outside [0.0, 1.0]"
-        )
-
     return VerifiedValidation(
         extracted_facts=verified_facts,
+        clinical_facts=clinical_facts,
+        clause_judgments=clause_judgments,
         code_recommendations=verified_recommendations,
         documentation_gaps=documentation_gaps,
-        denial_risk_score=float(denial_risk_score),
-        denial_risk_rationale=output["denial_risk_rationale"],
+        coverage_rationale=output["coverage_rationale"],
         rejections=rejections,
     )
