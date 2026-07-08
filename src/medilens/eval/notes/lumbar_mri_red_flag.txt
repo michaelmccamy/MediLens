@@ -1,0 +1,16 @@
+SYNTHETIC NOTE. Not a real patient. Evaluation fixture only.
+
+Chief complaint: Acute severe low back pain with new bilateral leg weakness,
+onset 2 days ago.
+
+History of present illness: Sudden onset severe low back pain 2 days ago with
+progressive bilateral lower extremity weakness, new saddle anesthesia, and
+one episode of urinary retention this morning. Suspected cauda equina
+syndrome.
+
+Physical exam: Diminished perianal sensation. Bilateral lower extremity
+weakness 3/5. Diminished rectal tone.
+
+Assessment: Suspected cauda equina syndrome. Emergent evaluation indicated.
+
+Plan: Emergent lumbar MRI without contrast now. Neurosurgery notified.

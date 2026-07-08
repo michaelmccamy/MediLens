@@ -13,6 +13,31 @@ This defines the "mold" every payer policy conforms to before policy breadth
 is added: the two existing policies are refactored onto it, plus one
 structurally different exemplar (frequency-limited RFA).
 
+AMENDMENTS 2026-07-09 (review corrections, reflected in the implementation):
+
+1. Overrides are policy-level bypasses declared on the trigger clause, not
+   per-clause pull lists. `not_applicable_if_satisfied` on the overridden
+   clause is replaced by `bypasses: [clause_id, ...]` on the override clause
+   (for example red_flag). When the trigger resolves satisfied with verified
+   evidence, every listed clause becomes not_applicable: a red flag means
+   "image now, skip the gating criteria," so it moots the ENTIRE declared
+   prerequisite set, which may include a manual_review clause (rendering it
+   moot is different from asserting it passed). Membership is explicit policy
+   data; the engine special-cases no clause name, and the model can never
+   trigger a bypass.
+2. Imaging-recency lookbacks are manual_review, not model_judged. The MRI
+   policy's not_recent_duplicate is the same claims-history question as RFA's
+   frequency_limit and fails closed the same way: notes almost never
+   affirmatively document the absence of prior imaging, so judging it from
+   note text would punish clean notes. It defers to human review, with a
+   declared source: history fact documenting the deterministic upgrade path.
+3. Unit normalization is owned by code. For duration facts the model reports
+   the value and unit exactly as the note documents them (for example value 2,
+   unit months); code converts to the rule's threshold unit via an explicit
+   conversion table (day/week/month aliases, months as a documented 30-day
+   approximation) and fails closed (fact treated as undocumented) on any unit
+   it cannot convert. The model never pre-normalizes.
+
 ## 1. Purpose and principles
 
 The policy layer decides whether a note documents what a payer requires. Today

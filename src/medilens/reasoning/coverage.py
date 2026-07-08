@@ -12,16 +12,21 @@ Fail-closed invariants (docs/policy-schema.md sections 7, 8, 10):
 - Only satisfied and not_applicable count as met.
 - A judgment-bearing clause with no verified judgment is
   insufficient_documentation. Silence never passes.
-- An override only fires when its trigger clause itself resolved satisfied.
-- manual_review is sticky: it cannot be overridden into a pass and forces the
-  overall determination to manual_review unless a hard failure outranks it.
+- A bypass override only fires when its trigger clause itself resolved
+  satisfied with verified evidence, and only for the clauses the policy
+  explicitly lists. The model can never trigger one.
+- manual_review is sticky against everything except an explicit policy bypass:
+  it can never be upgraded to satisfied, and it forces the overall
+  determination to manual_review unless a hard failure outranks it or a
+  policy-declared override renders the clause not_applicable (moot, not
+  passed).
 """
 
 import datetime
 from dataclasses import dataclass
 
 from medilens.db.models import PayerPolicy
-from medilens.policy.rules import evaluate_rule
+from medilens.policy.rules import FactValue, evaluate_rule
 from medilens.policy.structure import (
     EVALUATION_DETERMINISTIC,
     EVALUATION_HYBRID,
@@ -138,7 +143,7 @@ def _evaluate_clause_raw(
     clause: ClauseSpec,
     policy_identifier: str,
     structure: PolicyStructure,
-    fact_values: dict[str, object],
+    fact_values: dict[str, FactValue],
     judgments: dict[tuple[str, str], VerifiedClauseJudgment],
     date_of_service: datetime.date,
     recommended_codes: frozenset[str],
@@ -232,28 +237,39 @@ def _evaluate_clause_raw(
 def _apply_overrides(
     structure: PolicyStructure, results: list[ClauseResult]
 ) -> list[ClauseResult]:
-    """Mark clauses not_applicable when a trigger clause resolved satisfied.
+    """Apply policy-level bypass overrides, computed in code.
 
-    Overrides are computed here, in code, from evaluated statuses. The model
-    cannot assert not_applicable; only a verified-satisfied trigger fires one.
-    manual_review is never overridden (it is sticky by construction: an
-    override replaces the status of the OVERRIDDEN clause, and a manual_review
-    clause listed as a trigger only fires if it somehow resolved satisfied,
-    which manual-review clauses never do).
+    A clause whose spec declares `bypasses` is an override trigger: when it
+    resolves satisfied with verified evidence, every clause it explicitly
+    lists becomes not_applicable. This is the "image now, skip the gating
+    criteria" semantic: a verified red flag moots the entire prerequisite set
+    the policy author listed, which may include a manual_review clause such as
+    an imaging-recency lookback (the emergency makes the lookback moot; this
+    renders it not applicable, which is different from asserting it passed).
+
+    The model can never trigger a bypass: only an evaluated, verified
+    satisfied status on the trigger clause fires it, and membership comes
+    from policy data, never from engine special cases.
     """
     status_by_id: dict[str, str] = {}
     for result in results:
         status_by_id[result.clause_id] = result.status
 
+    # Collect the clauses mooted by each satisfied override trigger.
+    bypassed_by: dict[str, str] = {}
+    for clause in structure.clauses:
+        if len(clause.bypasses) == 0:
+            continue
+        if status_by_id.get(clause.clause_id) != STATUS_SATISFIED:
+            continue
+        for bypassed_id in clause.bypasses:
+            if bypassed_id not in bypassed_by:
+                bypassed_by[bypassed_id] = clause.clause_id
+
     adjusted: list[ClauseResult] = []
     for result in results:
-        clause = structure.clause_by_id(result.clause_id)
-        fired_trigger: str | None = None
-        for trigger_id in clause.not_applicable_if_satisfied:
-            if status_by_id.get(trigger_id) == STATUS_SATISFIED:
-                fired_trigger = trigger_id
-                break
-        if fired_trigger is not None and result.status != STATUS_MANUAL_REVIEW:
+        trigger_id = bypassed_by.get(result.clause_id)
+        if trigger_id is not None:
             adjusted.append(
                 ClauseResult(
                     policy_identifier=result.policy_identifier,
@@ -262,8 +278,9 @@ def _apply_overrides(
                     status=STATUS_NOT_APPLICABLE,
                     decided_by="override",
                     detail=(
-                        f"not applicable: clause {fired_trigger} is satisfied "
-                        "with verified evidence"
+                        f"not applicable: override clause {trigger_id} is "
+                        "satisfied with verified evidence and bypasses this "
+                        "clause"
                     ),
                     evidence=result.evidence,
                     required=result.required,
@@ -337,9 +354,9 @@ def evaluate_policy_coverage(
     recommended_codes: frozenset[str],
 ) -> CoverageAssessment:
     """Evaluate every clause of one policy and compute its determination."""
-    fact_values: dict[str, object] = {}
+    fact_values: dict[str, FactValue] = {}
     for key, fact in clinical_facts.items():
-        fact_values[key] = fact.value
+        fact_values[key] = FactValue(value=fact.value, unit=fact.unit)
 
     raw_results: list[ClauseResult] = []
     for clause in structure.clauses:

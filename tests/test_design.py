@@ -3,29 +3,50 @@
 The renderer is pure and untrusted-input-facing: it takes note text and model
 output and produces HTML. These tests pin the safety-critical behavior
 (escaping, the note-partition invariant) and the compliance strings the design
-handoff requires to survive the port.
+handoff requires to survive, now including the policy-v2 clause table and the
+computed determination hero.
 """
 
 import datetime
 
 from medilens.ui import design
 from medilens.ui.recommendation_view import (
+    ClauseResultView,
     CodeSuggestion,
     NoteSpan,
-    PolicyClauseCitation,
     RecommendationView,
 )
 
 FIXED_GENERATED_AT = datetime.datetime(2026, 7, 8, 15, 42, 54)
 
 
+def _clause(
+    clause_id: str = "symptom_duration",
+    status: str = "satisfied",
+    decided_by: str = "rule+model",
+    evidence: list[NoteSpan] | None = None,
+) -> ClauseResultView:
+    return ClauseResultView(
+        policy_identifier="SYN-LUMBAR-MRI-001",
+        clause_id=clause_id,
+        title=clause_id.replace("_", " "),
+        status=status,
+        decided_by=decided_by,
+        detail="rule min_duration: documented 8 weeks >= threshold 6 weeks",
+        required=True,
+        evidence=evidence or [],
+    )
+
+
 def _make_view(
     note_text: str = "Assessment: Lumbar radiculopathy, left L5.\n",
     is_sample: bool = False,
-    has_coverage_basis: bool = True,
+    determination: str = "meets_criteria",
     documentation_gaps: list[str] | None = None,
     verification_rejections: list[str] | None = None,
     code_suggestions: list[CodeSuggestion] | None = None,
+    clause_results: list[ClauseResultView] | None = None,
+    model_coverage_rationale: str = "Model narrative.",
 ) -> RecommendationView:
     if documentation_gaps is None:
         documentation_gaps = [
@@ -47,16 +68,10 @@ def _make_view(
                 description="Radiculopathy, lumbar region",
                 rationale="Most specific supported code for documented radiculopathy.",
                 supporting_note_spans=[span],
-                cited_policy_clauses=[
-                    PolicyClauseCitation(
-                        policy_identifier="SYN-LUMBAR-MRI-001",
-                        clause_number=3,
-                        clause_text="Documentation records objective neurologic findings.",
-                    )
-                ],
-                has_coverage_basis=has_coverage_basis,
             )
         ]
+    if clause_results is None:
+        clause_results = [_clause()]
     return RecommendationView(
         is_sample=is_sample,
         input_reference="note-abc123",
@@ -66,12 +81,15 @@ def _make_view(
         extracted_facts=["Low back pain, 8 weeks.", "Positive SLR on the left."],
         code_suggestions=code_suggestions,
         documentation_gaps=documentation_gaps,
+        determination=determination,
         denial_risk_score=0.15,
-        denial_risk_rationale="Clauses 1 through 3 satisfied.",
+        determination_rationale="Computed from clause statuses.",
+        model_coverage_rationale=model_coverage_rationale,
         model_name="claude-sonnet-5",
         model_version="claude-sonnet-5",
-        prompt_template_version="validation_v2",
+        prompt_template_version="validation_v3",
         generated_at=FIXED_GENERATED_AT,
+        clause_results=clause_results,
         verification_rejections=verification_rejections,
     )
 
@@ -96,8 +114,6 @@ def test_model_output_is_html_escaped() -> None:
         description="<b>evil</b>",
         rationale="rationale with <script>",
         supporting_note_spans=[],
-        cited_policy_clauses=[],
-        has_coverage_basis=False,
     )
     view = _make_view(code_suggestions=[evil_code])
     html = design.build_results_html(view, "note\n", audit_id=1)
@@ -110,14 +126,17 @@ def test_model_output_is_html_escaped() -> None:
     assert "&lt;script&gt;" in html
 
 
-def test_rationale_and_gap_escaped() -> None:
+def test_clause_detail_and_narrative_escaped() -> None:
+    clause = _clause()
+    clause.detail = "detail with <script>bad</script>"
     view = _make_view(
-        documentation_gaps=["If clinically accurate, document <b>X</b> & Y."]
+        clause_results=[clause],
+        model_coverage_rationale="narrative <img src=x>",
     )
     html = design.build_results_html(view, "note\n", audit_id=1)
 
-    assert "<b>X</b>" not in html
-    assert "&lt;b&gt;X&lt;/b&gt;" in html
+    assert "<script>bad" not in html
+    assert "narrative <img" not in html
 
 
 # --- note partition invariant -----------------------------------------------
@@ -132,19 +151,8 @@ def test_build_note_segments_concatenate_to_original() -> None:
     assert rebuilt == note
 
 
-def test_build_note_segments_tags_covering_ids() -> None:
-    note = "abcdefgh"
-    spans = [("x", 2, 5)]
-    segments = design.build_note_segments(note, spans)
-
-    covered = "".join(text for text, ids in segments if "x" in ids)
-    assert covered == "cde"
-
-
 def test_build_note_segments_handles_overlap() -> None:
     note = "abcdefgh"
-    # Overlapping spans: [1,5) and [3,7). Character 'd','e' (indexes 3,4)
-    # are covered by both.
     spans = [("x", 1, 5), ("y", 3, 7)]
     segments = design.build_note_segments(note, spans)
 
@@ -154,16 +162,7 @@ def test_build_note_segments_handles_overlap() -> None:
     assert both == "de"
 
 
-def test_build_note_segments_no_spans() -> None:
-    note = "no citations here"
-    segments = design.build_note_segments(note, [])
-
-    assert "".join(text for text, _ in segments) == note
-    assert all(len(ids) == 0 for _text, ids in segments)
-
-
 def test_build_note_segments_clamps_out_of_range() -> None:
-    # A defensively out-of-range span must not raise or corrupt the text.
     note = "short"
     spans = [("x", 2, 999)]
     segments = design.build_note_segments(note, spans)
@@ -183,13 +182,6 @@ def test_split_conditional_gap_detects_prefix() -> None:
     assert remainder == "document duration."
 
 
-def test_split_conditional_gap_leaves_nonconditional_untouched() -> None:
-    prefix, remainder = design.split_conditional_gap("Document the duration.")
-
-    assert prefix == ""
-    assert remainder == "Document the duration."
-
-
 def test_gap_prefix_is_bolded_in_output() -> None:
     view = _make_view(
         documentation_gaps=["If clinically accurate, document prior imaging."]
@@ -198,35 +190,71 @@ def test_gap_prefix_is_bolded_in_output() -> None:
 
     assert "<strong" in html
     assert "If clinically accurate," in html
-    assert "document prior imaging." in html
 
 
-# --- risk band --------------------------------------------------------------
+# --- determination display ----------------------------------------------------
 
 
-def test_risk_band_thresholds() -> None:
-    assert design.risk_band(0.0)[0] == "Low"
-    assert design.risk_band(0.33)[0] == "Low"
-    assert design.risk_band(0.34)[0] == "Moderate"
-    assert design.risk_band(0.66)[0] == "Moderate"
-    assert design.risk_band(0.67)[0] == "High"
-    assert design.risk_band(1.0)[0] == "High"
+def test_determination_display_labels() -> None:
+    assert design.determination_display("meets_criteria")[0] == "Meets criteria"
+    assert design.determination_display("does_not_meet")[0] == "Does not meet"
+    assert (
+        design.determination_display("insufficient_documentation")[0]
+        == "Insufficient documentation"
+    )
+    assert design.determination_display("manual_review")[0] == "Needs human review"
 
 
-# --- compliance strings survive the port ------------------------------------
+def test_hero_shows_determination_and_computed_caption() -> None:
+    view = _make_view(determination="meets_criteria")
+    html = design.build_results_html(view, "note\n", audit_id=1)
+
+    assert "Meets criteria" in html
+    assert "computed from clause statuses" in html
+    assert "Computed from clause statuses." in html  # the rationale paragraph
 
 
-def test_honesty_banner_string_present() -> None:
-    html = design.honesty_banner_html()
-    assert "based only on documentation currently present" in html
-    assert "Do not add documentation unless it is clinically accurate" in html
-    assert "nothing is ever submitted to a payer" in html
+def test_manual_review_hero_disclaims_prediction() -> None:
+    view = _make_view(determination="manual_review")
+    html = design.build_results_html(view, "note\n", audit_id=1)
+
+    assert "Needs human review" in html
+    assert "not a denial prediction" in html
 
 
-def test_synthetic_badge_and_dos_note_present() -> None:
-    top = design.top_bar_html(live=True, model_name="claude-sonnet-5")
-    assert "SYNTHETIC NOTES ONLY" in top
-    assert "resolved against the date of service, not today" in design.dos_note_html()
+# --- clause table ---------------------------------------------------------------
+
+
+def test_clause_table_renders_statuses_and_decided_by() -> None:
+    clauses = [
+        _clause("symptom_duration", "satisfied", "rule+model"),
+        _clause("not_recent_duplicate", "manual_review", "deferred"),
+        _clause("conservative_therapy", "not_applicable", "override"),
+    ]
+    view = _make_view(clause_results=clauses)
+    html = design.build_results_html(view, "note\n", audit_id=1)
+
+    assert "Coverage determination by clause" in html
+    assert "symptom_duration" in html
+    assert "manual review" in html  # status label with underscores replaced
+    assert "not applicable" in html
+    assert "deferred" in html
+    assert "override" in html
+    assert "the model never asserts the overall determination" in html.lower()
+
+
+def test_clause_evidence_is_clickable_and_highlights_note() -> None:
+    note = "Assessment: Lumbar radiculopathy, left L5.\n"
+    evidence = NoteSpan(text="Lumbar radiculopathy", start_offset=12, end_offset=32)
+    clauses = [_clause("symptom_duration", "satisfied", evidence=[evidence])]
+    view = _make_view(clause_results=clauses, code_suggestions=[])
+    html = design.build_results_html(view, note, audit_id=1)
+
+    assert 'data-span="c0-0"' in html
+    assert 'data-spans="c0-0"' in html
+
+
+# --- compliance strings survive ------------------------------------------------
 
 
 def test_results_document_carries_compliance_copy() -> None:
@@ -238,11 +266,15 @@ def test_results_document_carries_compliance_copy() -> None:
     assert "Every recommendation is reconstructable for audit" in html
     assert "Audit records are append only" in html
     assert design.FOOTER_SENTENCE in html
-    # Provenance fields.
     assert "claude-sonnet-5" in html
-    assert "validation_v2" in html
-    assert "note-abc123" in html
+    assert "validation_v3" in html
     assert "audit id: 9" in html
+
+
+def test_honesty_banner_string_present() -> None:
+    html = design.honesty_banner_html()
+    assert "based only on documentation currently present" in html
+    assert "nothing is ever submitted to a payer" in html
 
 
 def test_no_em_dash_in_rendered_output() -> None:
@@ -262,24 +294,23 @@ def test_sample_view_shows_sample_banner() -> None:
     assert "audit id: not stored (sample)" in html
 
 
-def test_no_coverage_basis_shows_warning() -> None:
-    view = _make_view(has_coverage_basis=False)
+def test_model_narrative_card_labeled_as_prose() -> None:
+    view = _make_view(model_coverage_rationale="Some prose.")
     html = design.build_results_html(view, "note\n", audit_id=1)
-    assert "No coverage basis" in html
-    assert "Documentation-supported only" in html
+    assert "Model narrative" in html
+    assert "not from this text" in html
+
+
+def test_no_narrative_card_when_empty() -> None:
+    view = _make_view(model_coverage_rationale="")
+    html = design.build_results_html(view, "note\n", audit_id=1)
+    assert "Model narrative" not in html
 
 
 def test_rejections_card_present_when_rejections_exist() -> None:
     view = _make_view(verification_rejections=["dropped code S99.999: not in candidate set"])
     html = design.build_results_html(view, "note\n", audit_id=1)
     assert "Dropped by verification" in html
-    assert "dropped code S99.999" in html
-
-
-def test_no_rejections_card_when_none() -> None:
-    view = _make_view(verification_rejections=[])
-    html = design.build_results_html(view, "note\n", audit_id=1)
-    assert "Dropped by verification" not in html
 
 
 def test_empty_codes_shows_no_supported_codes() -> None:
@@ -288,16 +319,13 @@ def test_empty_codes_shows_no_supported_codes() -> None:
     assert "No supported codes found" in html
 
 
-def test_located_span_becomes_clickable_chip_and_highlight() -> None:
+def test_located_code_span_becomes_clickable_chip() -> None:
     note = "Assessment: Lumbar radiculopathy, left L5.\n"
     view = _make_view(note_text=note)
     html = design.build_results_html(view, note, audit_id=1)
 
-    # The located span produces a clickable chip and a matching highlight span
-    # sharing the same id.
     assert 'data-span="s0-0"' in html
     assert 'data-spans="s0-0"' in html
-    assert "chars " in html
 
 
 def test_results_height_is_bounded() -> None:

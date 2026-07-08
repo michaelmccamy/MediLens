@@ -30,9 +30,12 @@ Hard rules. Violating any of these makes your output unusable:
    EXTRACT, and ONLY when the note explicitly states it. If the note does not
    state a value, OMIT that key entirely. Never infer, estimate, or guess a
    value. Values are plain strings: a number for durations and counts (for
-   example "8" for 8 weeks when the unit is weeks, "50" for 50 percent),
-   "true" or "false" for booleans, YYYY-MM-DD for dates. Each value needs one
-   verbatim evidence span.
+   example "8" or "50"), "true" or "false" for booleans, YYYY-MM-DD for
+   dates. For duration facts, report the number and the unit EXACTLY as the
+   note documents them (for example value "2" with unit "months" when the
+   note says "2 months"); never convert between units, the system does all
+   conversion. Set unit to an empty string for non-duration facts. Each value
+   needs one verbatim evidence span.
 4. clause_judgments: return exactly one judgment for each clause listed under
    CLAUSES TO ASSESS, identified by its policy_identifier and clause_id
    exactly as written. Do not judge any other clause. The only statuses you

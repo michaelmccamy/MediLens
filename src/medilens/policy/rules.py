@@ -30,8 +30,50 @@ STATUS_MANUAL_REVIEW = "manual_review"
 
 # Duration units normalized to days. Months use a documented 30-day
 # approximation; policies needing exact month arithmetic should express their
-# thresholds in days or weeks.
+# thresholds in days or weeks. Unit conversion is owned by code: the model
+# reports the value and unit exactly as the note documents them, and anything
+# outside this table fails closed at verification (the fact is treated as
+# undocumented), never guessed.
 _DAYS_PER_UNIT = {"days": 1.0, "weeks": 7.0, "months": 30.0}
+
+# Accepted spellings for each canonical duration unit.
+_UNIT_ALIASES = {
+    "day": "days",
+    "days": "days",
+    "week": "weeks",
+    "weeks": "weeks",
+    "wk": "weeks",
+    "wks": "weeks",
+    "month": "months",
+    "months": "months",
+    "mo": "months",
+    "mos": "months",
+}
+
+
+def normalize_duration_unit(raw_unit: str | None) -> str | None:
+    """Map a documented unit spelling to its canonical form, or None.
+
+    None means the unit is not convertible; callers must fail closed (treat
+    the fact as undocumented), never assume a default.
+    """
+    if raw_unit is None:
+        return None
+    return _UNIT_ALIASES.get(raw_unit.strip().lower())
+
+
+@dataclass(frozen=True)
+class FactValue:
+    """A verified fact value plus the unit it was documented in.
+
+    unit is the canonical documented unit for durations (already normalized
+    and validated by the verifier) and None or a label like "percent" for
+    other types. All conversion between the documented unit and a rule's
+    threshold unit happens in this module, in code.
+    """
+
+    value: Any
+    unit: str | None
 
 
 @dataclass(frozen=True)
@@ -80,12 +122,19 @@ def _to_days(value: float, unit: str | None) -> float:
 def _compare_duration(
     rule: RuleSpec,
     fact_spec: FactSpec,
-    value: float,
+    fact: FactValue,
     minimum: bool,
 ) -> RuleOutcome:
+    """Compare a documented duration against a threshold, converting in code.
+
+    The value is converted from the unit the NOTE documented (fact.unit,
+    already normalized by the verifier), and the threshold from the unit the
+    RULE declares. The model never converts units.
+    """
     threshold = float(rule.params["minimum" if minimum else "maximum"])
     rule_unit = rule.params.get("unit", fact_spec.unit)
-    value_days = _to_days(value, fact_spec.unit)
+    value = float(fact.value)
+    value_days = _to_days(value, fact.unit)
     threshold_days = _to_days(threshold, rule_unit)
 
     if minimum:
@@ -95,7 +144,7 @@ def _compare_duration(
         passed = value_days <= threshold_days
         comparator = "<=" if passed else ">"
     detail = (
-        f"rule {rule.op}: documented {value:g} {fact_spec.unit} {comparator} "
+        f"rule {rule.op}: documented {value:g} {fact.unit} {comparator} "
         f"threshold {threshold:g} {rule_unit}"
     )
     status = STATUS_SATISFIED if passed else STATUS_NOT_SATISFIED
@@ -123,16 +172,16 @@ def _compare_count(
 def evaluate_rule(
     rule: RuleSpec,
     fact_specs: dict[str, FactSpec],
-    fact_values: dict[str, Any],
+    fact_values: dict[str, FactValue],
     date_of_service: datetime.date,
     recommended_codes: frozenset[str],
 ) -> RuleOutcome:
     """Evaluate one deterministic rule against verified inputs.
 
-    fact_values maps fact key to its verified, typed value (float for duration
-    and count, bool for boolean, datetime.date for date). A key absent from
-    fact_values means the fact was not documented or not verifiable, which
-    triggers the fail-closed path for its declared source.
+    fact_values maps fact key to its verified FactValue (typed value plus the
+    documented unit). A key absent from fact_values means the fact was not
+    documented or not verifiable, which triggers the fail-closed path for its
+    declared source.
     """
     if rule.op == "code_in_set":
         allowed = frozenset(rule.params.get("allowed", []))
@@ -161,12 +210,13 @@ def evaluate_rule(
     fact_spec = fact_specs[fact_key]
     if fact_key not in fact_values:
         return _missing_fact_outcome(fact_spec)
-    value = fact_values[fact_key]
+    fact = fact_values[fact_key]
+    value = fact.value
 
     if rule.op == "min_duration":
-        return _compare_duration(rule, fact_spec, float(value), minimum=True)
+        return _compare_duration(rule, fact_spec, fact, minimum=True)
     if rule.op == "max_duration":
-        return _compare_duration(rule, fact_spec, float(value), minimum=False)
+        return _compare_duration(rule, fact_spec, fact, minimum=False)
     if rule.op == "min_count":
         return _compare_count(rule, fact_spec, float(value), minimum=True)
     if rule.op == "max_count":

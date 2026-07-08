@@ -1,0 +1,16 @@
+SYNTHETIC NOTE. Not a real patient. Evaluation fixture only.
+
+Chief complaint: Low back pain radiating to the left leg, 8 weeks duration.
+
+History of present illness: Gradual onset low back pain radiating into the
+left posterior thigh and calf over the past 8 weeks. Worse with prolonged
+sitting. Denies saddle anesthesia, bowel or bladder dysfunction, fever, or
+unexplained weight loss.
+
+Physical exam: Positive straight leg raise on the left at 40 degrees.
+Diminished sensation in the left L5 dermatome. Strength 4/5 left extensor
+hallucis longus.
+
+Assessment: Lumbar radiculopathy, left L5 distribution, 8 weeks duration.
+
+Plan: Order lumbar MRI without contrast to evaluate for disc herniation.

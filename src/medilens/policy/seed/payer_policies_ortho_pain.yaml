@@ -46,10 +46,10 @@ policies:
           unit: weeks
           source: note
           description: "How long the low back or radicular symptoms have been present, as documented."
-      # Upgrade path: a prior_mri_same_region history fact would let the
-      # not_recent_duplicate clause become deterministic once a claims or
-      # imaging history source exists. Until then it is judged from what the
-      # note itself states.
+        - key: prior_mri_same_region_12mo
+          type: count
+          source: history
+          description: "Prior MRIs of the same region for the same indication in the last 12 months, from claims or imaging history. Documents the upgrade path for not_recent_duplicate; no history source exists in this deployment."
       clauses:
         - clause_id: symptom_duration
           title: "Symptom duration and character"
@@ -58,7 +58,6 @@ policies:
             at least 6 weeks, unless a red-flag indication is present.
           evaluation: hybrid
           required: true
-          not_applicable_if_satisfied: [red_flag]
           rule: { op: min_duration, fact: symptom_duration, unit: weeks, minimum: 6 }
           judgment:
             question: "Are the documented symptoms low back or radicular in character?"
@@ -73,7 +72,6 @@ policies:
             red-flag indication is present.
           evaluation: model_judged
           required: true
-          not_applicable_if_satisfied: [red_flag]
           judgment:
             question: "Is a completed conservative-therapy trial documented in the note?"
             requires_evidence: true
@@ -93,31 +91,45 @@ policies:
             requires_evidence: true
           source_ref: "SYNTHETIC clause. Illustrative."
 
+        # Policy-level emergency override: a verified red flag means "image
+        # now" and moots the entire gating prerequisite set below, including
+        # the imaging-recency lookback (bypass renders a clause moot; it never
+        # asserts the clause passed). Membership is explicit here; the engine
+        # special-cases nothing.
         - clause_id: red_flag
           title: "Red-flag override"
           text: >
             A red-flag indication (suspected malignancy, infection, fracture,
             or cauda equina syndrome) is documented. When present it overrides
-            the duration and conservative-therapy requirements.
+            the gating requirements for this study.
           evaluation: model_judged
           required: false
+          bypasses:
+            - symptom_duration
+            - conservative_therapy
+            - objective_findings
+            - not_recent_duplicate
           judgment:
             question: "Is a red-flag indication (suspected malignancy, infection, fracture, or cauda equina syndrome) documented?"
             requires_evidence: true
           source_ref: "SYNTHETIC clause. Illustrative."
 
+        # An imaging-recency lookback is a claims/imaging-history question,
+        # the same shape as RFA's frequency limit. Notes almost never
+        # affirmatively document the absence of prior imaging, so judging it
+        # from note text would punish clean notes; and no history source
+        # exists in this deployment. It therefore defers to human review,
+        # fail closed. Upgrade path: deterministic (max_count on
+        # prior_mri_same_region_12mo) once a history source exists.
         - clause_id: not_recent_duplicate
           title: "No recent duplicate study"
           text: >
-            The note states that no MRI of the same region was performed
-            recently for the same indication, or documents an interval change
-            in clinical status justifying a repeat study.
-          evaluation: model_judged
+            No MRI of the same region was performed recently for the same
+            indication without an interval change in clinical status. Requires
+            claims or imaging history to verify.
+          evaluation: manual_review
           required: true
-          judgment:
-            question: "Does the note state that no recent prior MRI of this region was performed for this indication, or document an interval change in clinical status?"
-            requires_evidence: true
-          source_ref: "SYNTHETIC clause. Illustrative. Upgrade path: deterministic once an imaging-history source exists."
+          source_ref: "SYNTHETIC clause. Illustrative. Requires imaging history; defers to manual review until a history source exists."
 
   - payer_name: National Commercial Payer A
     policy_identifier: SYN-LUMBAR-ESI-001

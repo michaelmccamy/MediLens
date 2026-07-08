@@ -269,11 +269,11 @@ def build_sample_recommendation(
             policy_identifier="SYN-LUMBAR-MRI-001",
             clause_id="not_recent_duplicate",
             title="No recent duplicate study",
-            status="insufficient_documentation",
-            decided_by="model",
+            status="manual_review",
+            decided_by="deferred",
             detail=(
-                "SAMPLE: no verified model judgment for this clause; silence "
-                "fails closed"
+                "SAMPLE: this clause always defers to human review (requires "
+                "imaging history; no history source is available)"
             ),
             required=True,
         ),
@@ -303,13 +303,13 @@ def build_sample_recommendation(
         extracted_facts=extracted_facts,
         code_suggestions=[code_suggestion],
         documentation_gaps=documentation_gaps,
-        determination="insufficient_documentation",
-        denial_risk_score=0.425,
+        determination="manual_review",
+        denial_risk_score=0.50,
         determination_rationale=(
             "SAMPLE. Computed from clause statuses "
             "(symptom_duration=satisfied; objective_findings=satisfied; "
-            "not_recent_duplicate=insufficient_documentation). Determination: "
-            "insufficient_documentation."
+            "not_recent_duplicate=manual_review). Determination: "
+            "manual_review."
         ),
         model_coverage_rationale=(
             "SAMPLE narrative: the documentation supports duration, therapy, "

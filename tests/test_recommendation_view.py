@@ -6,10 +6,10 @@ without the ui extra installed.
 
 import datetime
 
+from medilens.reasoning.coverage import ClauseResult, CoverageAssessment
 from medilens.reasoning.pipeline import ValidationOutcome, ValidationRequest
 from medilens.reasoning.verification import (
     LocatedSpan,
-    VerifiedClauseCitation,
     VerifiedCodeRecommendation,
     VerifiedFact,
     VerifiedValidation,
@@ -40,6 +40,7 @@ def test_sample_is_flagged_as_sample() -> None:
     # The provenance must not imply a real model ran.
     assert recommendation.model_name.startswith("SAMPLE")
     assert recommendation.prompt_template_version == "none"
+    assert recommendation.determination_rationale.startswith("SAMPLE")
 
 
 def test_sample_echoes_request_inputs() -> None:
@@ -50,15 +51,19 @@ def test_sample_echoes_request_inputs() -> None:
     assert recommendation.payer_name == "Medicare"
 
 
-def test_sample_code_is_grounded() -> None:
+def test_sample_code_is_grounded_and_clauses_present() -> None:
     recommendation = _build()
 
     assert len(recommendation.code_suggestions) == 1
     suggestion = recommendation.code_suggestions[0]
     assert suggestion.code == "M54.16"
-    # Grounding and provenance (guardrail 4): note spans and a policy clause.
     assert len(suggestion.supporting_note_spans) > 0
-    assert len(suggestion.cited_policy_clauses) > 0
+    # Coverage is policy-level: the view carries clause results, and the
+    # sample honestly shows the lookback deferring to human review.
+    assert len(recommendation.clause_results) > 0
+    statuses = {c.clause_id: c.status for c in recommendation.clause_results}
+    assert statuses["not_recent_duplicate"] == "manual_review"
+    assert recommendation.determination == "manual_review"
 
 
 def test_documentation_gaps_are_conditional() -> None:
@@ -99,6 +104,8 @@ def test_view_from_outcome_maps_verified_result_without_alteration() -> None:
                 span=LocatedSpan(text="8 weeks", start_offset=10, end_offset=17),
             )
         ],
+        clinical_facts={},
+        clause_judgments={},
         code_recommendations=[
             VerifiedCodeRecommendation(
                 code="M54.16",
@@ -108,24 +115,34 @@ def test_view_from_outcome_maps_verified_result_without_alteration() -> None:
                 supporting_spans=[
                     LocatedSpan(text="8 weeks", start_offset=10, end_offset=17)
                 ],
-                cited_clauses=[
-                    VerifiedClauseCitation(
-                        policy_identifier="SYN-LUMBAR-MRI-001",
-                        clause_number=3,
-                        clause_text="Objective neurologic findings documented.",
-                    )
-                ],
             )
         ],
         documentation_gaps=["If clinically accurate, document prior imaging."],
-        denial_risk_score=0.2,
-        denial_risk_rationale="Clauses 1 through 3 satisfied.",
+        coverage_rationale="Model narrative prose.",
         rejections=["dropped code X: not in the candidate set"],
+    )
+    assessment = CoverageAssessment(
+        clause_results=[
+            ClauseResult(
+                policy_identifier="SYN-LUMBAR-MRI-001",
+                clause_id="symptom_duration",
+                title="Symptom duration",
+                status="satisfied",
+                decided_by="rule+model",
+                detail="rule min_duration: documented 8 weeks >= threshold 6 weeks",
+                evidence=(LocatedSpan(text="8 weeks", start_offset=10, end_offset=17),),
+                required=True,
+            )
+        ],
+        determination="meets_criteria",
+        denial_risk_score=0.15,
+        determination_rationale="Computed from clause statuses.",
     )
     outcome = ValidationOutcome(
         verified=verified,
+        assessment=assessment,
         model_name="claude-sonnet-5",
-        prompt_template_version="validation_v1",
+        prompt_template_version="validation_v3",
         request_id="req_test",
         input_tokens=900,
         output_tokens=250,
@@ -143,20 +160,24 @@ def test_view_from_outcome_maps_verified_result_without_alteration() -> None:
     assert view.is_sample is False
     assert view.input_reference == "ui-note-abc123"
     assert view.model_name == "claude-sonnet-5"
-    assert view.prompt_template_version == "validation_v1"
+    assert view.prompt_template_version == "validation_v3"
     suggestion = view.code_suggestions[0]
     assert suggestion.code == "M54.16"
-    assert suggestion.description == "Radiculopathy, lumbar region"
     span = suggestion.supporting_note_spans[0]
     assert span.is_located
     assert (span.start_offset, span.end_offset) == (10, 17)
-    clause = suggestion.cited_policy_clauses[0]
-    assert clause.policy_identifier == "SYN-LUMBAR-MRI-001"
-    assert clause.clause_number == 3
+    assert view.determination == "meets_criteria"
+    assert view.denial_risk_score == 0.15
+    assert view.determination_rationale == "Computed from clause statuses."
+    assert view.model_coverage_rationale == "Model narrative prose."
+    clause = view.clause_results[0]
+    assert clause.clause_id == "symptom_duration"
+    assert clause.status == "satisfied"
+    assert clause.decided_by == "rule+model"
+    assert clause.evidence[0].is_located
     assert view.documentation_gaps == [
         "If clinically accurate, document prior imaging."
     ]
-    assert view.denial_risk_score == 0.2
     assert view.verification_rejections == [
         "dropped code X: not in the candidate set"
     ]

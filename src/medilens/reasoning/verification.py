@@ -34,6 +34,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from medilens.db.models import CodeSetEntry, PayerPolicy
+from medilens.policy.rules import normalize_duration_unit
 from medilens.policy.structure import FACT_SOURCE_NOTE, PolicyStructure
 
 # The conditional phrasing guardrail 1 requires of every documentation gap.
@@ -76,7 +77,14 @@ class VerifiedFact:
 
 @dataclass(frozen=True)
 class VerifiedClinicalFact:
-    """A typed clinical fact with verified evidence, ready for the rule engine."""
+    """A typed clinical fact with verified evidence, ready for the rule engine.
+
+    For duration facts, unit is the canonical form of the unit the NOTE
+    documented (normalized and validated here); the rule engine converts it to
+    the clause's threshold unit in code. The model never converts units, and a
+    documented unit outside the conversion table fails closed (the fact is
+    dropped and treated as undocumented).
+    """
 
     key: str
     value: Any  # float for duration/count, bool for boolean, date for date
@@ -304,6 +312,20 @@ def verify_validation_output(
                 f"{spec.type}; treated as undocumented (fail closed)"
             )
             continue
+        # Unit normalization is owned by code: for durations the model reports
+        # the unit as documented, and anything outside the conversion table
+        # fails closed rather than being guessed (correction 3).
+        if spec.type == "duration":
+            documented_unit = normalize_duration_unit(fact_item.get("unit", ""))
+            if documented_unit is None:
+                rejections.append(
+                    f"dropped clinical fact {key}: documented unit "
+                    "is missing or not convertible (days, weeks, months); "
+                    "treated as undocumented (fail closed)"
+                )
+                continue
+        else:
+            documented_unit = spec.unit
         evidence = _try_locate_span(note_text, fact_item["evidence"])
         if evidence is None:
             rejections.append(
@@ -313,7 +335,7 @@ def verify_validation_output(
             )
             continue
         clinical_facts[key] = VerifiedClinicalFact(
-            key=key, value=value, unit=spec.unit, evidence=evidence
+            key=key, value=value, unit=documented_unit, evidence=evidence
         )
 
     # Clause judgments: verify the clause exists and takes a judgment, locate

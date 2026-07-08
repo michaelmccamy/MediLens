@@ -1,0 +1,24 @@
+SYNTHETIC NOTE. Not a real patient. Evaluation fixture only.
+
+Chief complaint: Persistent left leg radicular pain despite conservative care;
+here to discuss epidural steroid injection.
+
+History of present illness: 10 weeks of low back pain radiating down the left
+posterior leg to the ankle in an L5 distribution. Denies saddle anesthesia,
+bowel or bladder dysfunction, fever, or weight loss.
+
+Conservative care to date: Completed 8 weeks of physical therapy with only
+transient relief. Naproxen with partial, temporary improvement. No prior
+epidural steroid injection.
+
+Imaging: MRI lumbar spine shows a left paracentral disc protrusion at L4-L5
+contacting the traversing left L5 nerve root.
+
+Physical exam: Positive straight leg raise on the left at 45 degrees.
+Diminished sensation over the left L5 dermatome.
+
+Assessment: Left L5 lumbar radiculopathy secondary to L4-L5 disc protrusion
+confirmed on MRI, persistent despite 8 weeks of conservative therapy.
+
+Plan: Recommend left L4-L5 transforaminal epidural steroid injection. No
+active infection and no anticoagulation; no contraindication identified.

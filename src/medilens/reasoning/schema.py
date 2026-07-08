@@ -77,7 +77,17 @@ VALIDATION_OUTPUT_SCHEMA: dict[str, Any] = {
                             "The documented value as a plain string: a number "
                             "for durations and counts (for example '8'), "
                             "'true' or 'false' for booleans, YYYY-MM-DD for "
-                            "dates."
+                            "dates. Never convert units; report the number "
+                            "exactly as documented."
+                        ),
+                    },
+                    "unit": {
+                        "type": "string",
+                        "description": (
+                            "For duration facts: the unit exactly as the note "
+                            "documents it (days, weeks, or months). The "
+                            "system converts units; you must not. Empty "
+                            "string for non-duration facts."
                         ),
                     },
                     "evidence": {
@@ -88,7 +98,7 @@ VALIDATION_OUTPUT_SCHEMA: dict[str, Any] = {
                         ),
                     },
                 },
-                "required": ["key", "value", "evidence"],
+                "required": ["key", "value", "unit", "evidence"],
                 "additionalProperties": False,
             },
         },

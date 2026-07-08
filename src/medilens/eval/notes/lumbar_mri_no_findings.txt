@@ -1,0 +1,14 @@
+SYNTHETIC NOTE. Not a real patient. Evaluation fixture only.
+
+Chief complaint: Low back pain radiating to the left leg, 8 weeks duration.
+
+History of present illness: Gradual onset low back pain radiating into the
+left posterior thigh over the past 8 weeks. Denies saddle anesthesia, bowel
+or bladder dysfunction, fever, or unexplained weight loss.
+
+Conservative care to date: Completed 6 weeks of physical therapy with minimal
+improvement. Naproxen with partial relief.
+
+Assessment: Lumbar radiculopathy, left leg, 8 weeks duration.
+
+Plan: Order lumbar MRI without contrast.

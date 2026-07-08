@@ -104,14 +104,22 @@ class JudgmentSpec:
 
 @dataclass(frozen=True)
 class ClauseSpec:
-    """One policy clause (section 3). clause_id is stable, never positional."""
+    """One policy clause (section 3). clause_id is stable, never positional.
+
+    bypasses declares a policy-level override: when THIS clause resolves
+    satisfied with verified evidence, every clause listed in bypasses becomes
+    not_applicable. Membership is explicit policy data (for example a red-flag
+    clause bypassing the entire gating prerequisite set); the engine never
+    special-cases any clause name, and the model can never trigger a bypass
+    directly.
+    """
 
     clause_id: str
     title: str
     text: str
     evaluation: str
     required: bool
-    not_applicable_if_satisfied: tuple[str, ...] = ()
+    bypasses: tuple[str, ...] = ()
     rule: RuleSpec | None = None
     judgment: JudgmentSpec | None = None
     source_ref: str = ""
@@ -287,10 +295,10 @@ def parse_policy_structure(raw: dict[str, Any], context: str) -> PolicyStructure
                 "carry a rule or judgment; it always defers to a human"
             )
 
-        overrides_raw = raw_clause.get("not_applicable_if_satisfied", []) or []
-        overrides: list[str] = []
-        for override_id in overrides_raw:
-            overrides.append(str(override_id))
+        bypasses_raw = raw_clause.get("bypasses", []) or []
+        bypasses: list[str] = []
+        for bypassed_id in bypasses_raw:
+            bypasses.append(str(bypassed_id))
 
         clauses.append(
             ClauseSpec(
@@ -299,20 +307,25 @@ def parse_policy_structure(raw: dict[str, Any], context: str) -> PolicyStructure
                 text=str(_require(raw_clause, "text", clause_context)).strip(),
                 evaluation=evaluation,
                 required=bool(_require(raw_clause, "required", clause_context)),
-                not_applicable_if_satisfied=tuple(overrides),
+                bypasses=tuple(bypasses),
                 rule=rule_spec,
                 judgment=judgment_spec,
                 source_ref=str(raw_clause.get("source_ref", "")),
             )
         )
 
-    # Override references must point at real clauses in this policy.
+    # Bypass references must point at real, other clauses in this policy.
     for clause in clauses:
-        for override_id in clause.not_applicable_if_satisfied:
-            if override_id not in clause_ids:
+        for bypassed_id in clause.bypasses:
+            if bypassed_id not in clause_ids:
                 raise ValueError(
-                    f"clause {clause.clause_id!r} in {context} lists override "
-                    f"{override_id!r} which does not exist in this policy"
+                    f"clause {clause.clause_id!r} in {context} bypasses "
+                    f"{bypassed_id!r} which does not exist in this policy"
+                )
+            if bypassed_id == clause.clause_id:
+                raise ValueError(
+                    f"clause {clause.clause_id!r} in {context} cannot bypass "
+                    "itself"
                 )
 
     return PolicyStructure(
@@ -359,9 +372,7 @@ def structure_from_json(raw_json: str, context: str) -> PolicyStructure:
                 text=raw_clause["text"],
                 evaluation=raw_clause["evaluation"],
                 required=raw_clause["required"],
-                not_applicable_if_satisfied=tuple(
-                    raw_clause["not_applicable_if_satisfied"]
-                ),
+                bypasses=tuple(raw_clause["bypasses"]),
                 rule=rule_spec,
                 judgment=judgment_spec,
                 source_ref=raw_clause["source_ref"],
@@ -396,9 +407,9 @@ def render_structure_text(service: str, structure: PolicyStructure) -> str:
             f"[{clause.clause_id}] ({clause.evaluation}, {required_label}) "
             f"{clause.title}: {clause.text}"
         )
-        if len(clause.not_applicable_if_satisfied) > 0:
-            overrides = ", ".join(clause.not_applicable_if_satisfied)
+        if len(clause.bypasses) > 0:
+            bypassed = ", ".join(clause.bypasses)
             lines.append(
-                f"    Not applicable when satisfied: {overrides}"
+                f"    When satisfied, makes not applicable: {bypassed}"
             )
     return "\n".join(lines)

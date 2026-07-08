@@ -1,0 +1,20 @@
+SYNTHETIC NOTE. Not a real patient. Evaluation fixture only.
+
+Chief complaint: Chronic axial low back pain; here to discuss radiofrequency
+ablation of the lumbar facets.
+
+History of present illness: 8 months of chronic axial low back pain, worse
+with extension and rotation, without radicular features. Denies saddle
+anesthesia, bowel or bladder dysfunction, fever, or weight loss.
+
+Prior interventions: Diagnostic left L4-L5 medial branch block performed 3
+weeks ago with 80 percent relief of the index pain for the duration of the
+local anesthetic, documented on the post-procedure pain log.
+
+Physical exam: Paraspinal tenderness over the left L4-L5 facets. Pain with
+extension and rotation. Neurologically intact.
+
+Assessment: Lumbar facet-mediated pain, left L4-L5, confirmed by positive
+diagnostic medial branch block.
+
+Plan: Proceed with left L4-L5 radiofrequency ablation of the medial branches.

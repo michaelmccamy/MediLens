@@ -1,4 +1,5 @@
-"""Tests for the payer-policy layer: parsing, hashing, ingestion, date resolution.
+"""Tests for the payer-policy layer: structure, parsing, hashing, ingestion,
+date resolution, and service matching (policy schema v2).
 
 Uses in-memory SQLite so the suite runs in CI without Docker. No real PHI is
 involved, and the seed policies are synthetic (CLAUDE.md section 8).
@@ -18,13 +19,18 @@ from medilens.policy.ingest import (
     compute_policy_hash,
     ingest_policies,
     parse_policy_seed_file,
-    render_policy_text,
 )
 from medilens.policy.retrieval import (
     find_policy_at_date,
     list_policies_for_payer_at_date,
     list_policies_for_service_at_date,
     service_matches,
+)
+from medilens.policy.structure import (
+    parse_policy_structure,
+    render_structure_text,
+    structure_from_json,
+    structure_to_json,
 )
 
 SEED_PATH = (
@@ -42,105 +48,213 @@ def session() -> Session:
         yield db_session
 
 
+def _raw_structure(clause_text: str = "First requirement.") -> dict:
+    return {
+        "schema_version": "policy-v2",
+        "version": 1,
+        "source": {
+            "type": "synthetic",
+            "authoritative": False,
+            "citation": "test citation",
+        },
+        "required_facts": [
+            {
+                "key": "symptom_duration",
+                "type": "duration",
+                "unit": "weeks",
+                "source": "note",
+                "description": "duration",
+            }
+        ],
+        "clauses": [
+            {
+                "clause_id": "duration",
+                "title": "Duration",
+                "text": clause_text,
+                "evaluation": "hybrid",
+                "required": True,
+                "rule": {"op": "min_duration", "fact": "symptom_duration", "unit": "weeks", "minimum": 6},
+                "judgment": {"question": "Documented?", "requires_evidence": True},
+            }
+        ],
+    }
+
+
 def _make_policy(
     payer_name: str = "Medicare",
     policy_identifier: str = "SYN-LUMBAR-MRI-001",
-    policy_text: str = "Service: Lumbar MRI\n\nDocumentation criteria:\n1. Example.",
+    clause_text: str = "First requirement.",
     effective_start: datetime.date = datetime.date(2025, 1, 1),
     effective_end: datetime.date | None = None,
     service: str = "Lumbar MRI (advanced imaging of the lumbar spine)",
     service_keywords: str = "lumbar mri,mri",
 ) -> ParsedPolicy:
+    structure = parse_policy_structure(_raw_structure(clause_text), "test")
+    structure_json = structure_to_json(structure)
     return ParsedPolicy(
         payer_name=payer_name,
         policy_identifier=policy_identifier,
         specialty="Orthopedics and pain medicine",
         service=service,
         service_keywords=service_keywords,
-        policy_text=policy_text,
+        policy_text=render_structure_text(service, structure),
+        structure=structure,
+        structure_json=structure_json,
         effective_start=effective_start,
         effective_end=effective_end,
         source="test source",
     )
 
 
-# --- rendering and parsing ----------------------------------------------
+# --- structure parsing and validation ----------------------------------------
 
 
-def test_render_policy_text_numbers_criteria() -> None:
-    rendered = render_policy_text(
-        "Lumbar MRI", ["First requirement.", "Second requirement."]
+def test_parse_structure_round_trips_through_json() -> None:
+    structure = parse_policy_structure(_raw_structure(), "test")
+    rehydrated = structure_from_json(structure_to_json(structure), "test")
+
+    assert rehydrated == structure
+
+
+def test_structure_from_empty_json_fails_loudly() -> None:
+    with pytest.raises(ValueError, match="predates policy schema v2"):
+        structure_from_json("", "SYN-OLD-001")
+
+
+def test_parse_structure_rejects_duplicate_clause_ids() -> None:
+    raw = _raw_structure()
+    raw["clauses"].append(dict(raw["clauses"][0]))
+
+    with pytest.raises(ValueError, match="duplicated"):
+        parse_policy_structure(raw, "test")
+
+
+def test_parse_structure_rejects_rule_with_undeclared_fact() -> None:
+    raw = _raw_structure()
+    raw["clauses"][0]["rule"]["fact"] = "undeclared_fact"
+
+    with pytest.raises(ValueError, match="undeclared_fact"):
+        parse_policy_structure(raw, "test")
+
+
+def test_parse_structure_rejects_unknown_operator() -> None:
+    raw = _raw_structure()
+    raw["clauses"][0]["rule"]["op"] = "magic_op"
+
+    with pytest.raises(ValueError, match="magic_op"):
+        parse_policy_structure(raw, "test")
+
+
+def test_parse_structure_requires_judgment_for_model_judged() -> None:
+    raw = _raw_structure()
+    raw["clauses"][0]["evaluation"] = "model_judged"
+    raw["clauses"][0]["rule"] = None
+    raw["clauses"][0]["judgment"] = None
+
+    with pytest.raises(ValueError, match="judgment"):
+        parse_policy_structure(raw, "test")
+
+
+def test_parse_structure_manual_review_carries_no_rule_or_judgment() -> None:
+    raw = _raw_structure()
+    raw["clauses"][0]["evaluation"] = "manual_review"
+
+    with pytest.raises(ValueError, match="manual_review"):
+        parse_policy_structure(raw, "test")
+
+
+def test_parse_structure_rejects_unknown_bypass_target() -> None:
+    raw = _raw_structure()
+    raw["clauses"][0]["bypasses"] = ["nonexistent"]
+
+    with pytest.raises(ValueError, match="nonexistent"):
+        parse_policy_structure(raw, "test")
+
+
+def test_parse_structure_rejects_self_bypass() -> None:
+    raw = _raw_structure()
+    raw["clauses"][0]["bypasses"] = ["duration"]
+
+    with pytest.raises(ValueError, match="cannot bypass itself"):
+        parse_policy_structure(raw, "test")
+
+
+def test_parse_structure_rejects_authoritative_synthetic() -> None:
+    raw = _raw_structure()
+    raw["source"]["authoritative"] = True
+
+    with pytest.raises(ValueError, match="authoritative"):
+        parse_policy_structure(raw, "test")
+
+
+def test_render_structure_text_shows_clause_ids_and_bypasses() -> None:
+    raw = _raw_structure()
+    raw["clauses"].append(
+        {
+            "clause_id": "red_flag",
+            "title": "Red flag",
+            "text": "Red flag documented.",
+            "evaluation": "model_judged",
+            "required": False,
+            "bypasses": ["duration"],
+            "judgment": {"question": "Red flag?", "requires_evidence": True},
+        }
     )
+    structure = parse_policy_structure(raw, "test")
 
-    assert "Service: Lumbar MRI" in rendered
-    assert "1. First requirement." in rendered
-    assert "2. Second requirement." in rendered
+    rendered = render_structure_text("Lumbar MRI", structure)
+
+    assert "[duration]" in rendered
+    assert "[red_flag]" in rendered
+    assert "When satisfied, makes not applicable: duration" in rendered
 
 
-def test_parse_seed_file_loads_policies() -> None:
+# --- seed file ----------------------------------------------------------------
+
+
+def test_parse_seed_file_loads_v2_policies() -> None:
     policies = parse_policy_seed_file(SEED_PATH)
 
-    assert len(policies) > 0
     identifiers = {policy.policy_identifier for policy in policies}
-    assert "SYN-LUMBAR-MRI-001" in identifiers
-
-
-def test_parse_seed_file_applies_specialty_and_renders_text() -> None:
-    policies = parse_policy_seed_file(SEED_PATH)
-
+    assert identifiers == {
+        "SYN-LUMBAR-MRI-001",
+        "SYN-LUMBAR-ESI-001",
+        "SYN-LUMBAR-RFA-001",
+    }
     for policy in policies:
-        assert policy.specialty == "Orthopedics and pain medicine"
-        # Criteria are rendered into a numbered, citable block.
-        assert "Documentation criteria:" in policy.policy_text
-        assert "1. " in policy.policy_text
+        assert policy.structure.schema_version == "policy-v2"
+        assert policy.structure.source_authoritative is False
+        assert len(policy.structure.clauses) > 0
+        assert policy.structure_json != ""
 
 
-def test_parse_seed_file_rejects_empty_criteria(tmp_path: Path) -> None:
-    bad_file = tmp_path / "bad_policy.yaml"
-    bad_file.write_text(
-        "specialty: X\n"
-        "policies:\n"
-        "  - payer_name: P\n"
-        "    policy_identifier: ID\n"
-        "    service: S\n"
-        "    service_keywords: [s]\n"
-        "    source: src\n"
-        "    effective_start: 2025-01-01\n"
-        "    criteria: []\n",
-        encoding="utf-8",
-    )
+def test_seed_mri_policy_shape() -> None:
+    policies = {p.policy_identifier: p for p in parse_policy_seed_file(SEED_PATH)}
+    mri = policies["SYN-LUMBAR-MRI-001"].structure
 
-    with pytest.raises(ValueError, match="criteria"):
-        parse_policy_seed_file(bad_file)
-
-
-def test_parse_seed_file_requires_service_keywords(tmp_path: Path) -> None:
-    bad_file = tmp_path / "no_keywords.yaml"
-    bad_file.write_text(
-        "specialty: X\n"
-        "policies:\n"
-        "  - payer_name: P\n"
-        "    policy_identifier: ID\n"
-        "    service: S\n"
-        "    source: src\n"
-        "    effective_start: 2025-01-01\n"
-        "    criteria: [\"If clinically accurate, document X.\"]\n",
-        encoding="utf-8",
-    )
-
-    with pytest.raises(ValueError, match="service_keywords"):
-        parse_policy_seed_file(bad_file)
+    red_flag = mri.clause_by_id("red_flag")
+    assert set(red_flag.bypasses) == {
+        "symptom_duration",
+        "conservative_therapy",
+        "objective_findings",
+        "not_recent_duplicate",
+    }
+    lookback = mri.clause_by_id("not_recent_duplicate")
+    assert lookback.evaluation == "manual_review"
+    duration = mri.clause_by_id("symptom_duration")
+    assert duration.evaluation == "hybrid"
+    assert duration.rule.op == "min_duration"
 
 
-def test_parse_seed_file_populates_service_fields() -> None:
-    policies = parse_policy_seed_file(SEED_PATH)
+def test_seed_rfa_policy_has_history_frequency_limit() -> None:
+    policies = {p.policy_identifier: p for p in parse_policy_seed_file(SEED_PATH)}
+    rfa = policies["SYN-LUMBAR-RFA-001"].structure
 
-    for policy in policies:
-        assert policy.service != ""
-        assert policy.service_keywords != ""
-    keyword_sets = {policy.policy_identifier: policy.service_keywords for policy in policies}
-    assert "mri" in keyword_sets["SYN-LUMBAR-MRI-001"]
-    assert "epidural" in keyword_sets["SYN-LUMBAR-ESI-001"]
+    frequency = rfa.clause_by_id("frequency_limit")
+    assert frequency.evaluation == "deterministic"
+    specs = rfa.fact_specs_by_key()
+    assert specs["rfa_same_level_12mo"].source == "history"
+    assert specs["mbb_relief_percent"].source == "note"
 
 
 # --- hashing -------------------------------------------------------------
@@ -152,9 +266,9 @@ def test_policy_hash_is_stable() -> None:
     assert compute_policy_hash(policy) == compute_policy_hash(policy)
 
 
-def test_policy_hash_changes_when_text_changes() -> None:
-    original = _make_policy(policy_text="1. Original clause.")
-    revised = _make_policy(policy_text="1. Revised clause.")
+def test_policy_hash_changes_when_structure_changes() -> None:
+    original = _make_policy(clause_text="Original clause.")
+    revised = _make_policy(clause_text="Revised clause.")
 
     assert compute_policy_hash(original) != compute_policy_hash(revised)
 
@@ -166,23 +280,20 @@ def test_policy_hash_changes_when_effective_end_set() -> None:
     assert compute_policy_hash(active) != compute_policy_hash(retired)
 
 
-def test_policy_hash_changes_when_service_changes() -> None:
-    mri = _make_policy(service="Lumbar MRI", service_keywords="mri")
-    esi = _make_policy(service="Lumbar ESI", service_keywords="esi")
-
-    assert compute_policy_hash(mri) != compute_policy_hash(esi)
-
-
 # --- ingestion -----------------------------------------------------------
 
 
-def test_ingest_writes_rows(session: Session) -> None:
+def test_ingest_writes_rows_with_structure(session: Session) -> None:
     policies = parse_policy_seed_file(SEED_PATH)
 
     written = ingest_policies(session, policies, FIXED_RETRIEVED_AT)
 
     assert written == len(policies)
-    assert session.query(PayerPolicy).count() == len(policies)
+    stored = session.query(PayerPolicy).all()
+    for row in stored:
+        assert row.structure_json != ""
+        # The stored structure rehydrates to a valid v2 structure.
+        structure_from_json(row.structure_json, row.policy_identifier)
 
 
 def test_ingest_is_idempotent(session: Session) -> None:
@@ -196,11 +307,11 @@ def test_ingest_is_idempotent(session: Session) -> None:
     assert session.query(PayerPolicy).count() == len(policies)
 
 
-def test_ingest_writes_new_version_when_text_changes(session: Session) -> None:
-    original = _make_policy(policy_text="1. Original clause.")
+def test_ingest_writes_new_version_when_structure_changes(session: Session) -> None:
+    original = _make_policy(clause_text="Original clause.")
     ingest_policies(session, [original], FIXED_RETRIEVED_AT)
 
-    revised = _make_policy(policy_text="1. Revised clause for 2026.")
+    revised = _make_policy(clause_text="Revised clause for 2026.")
     written = ingest_policies(session, [revised], FIXED_RETRIEVED_AT)
 
     # A changed policy is a new version; both coexist for audit history.
@@ -330,7 +441,7 @@ def test_list_policies_excludes_out_of_force(session: Session) -> None:
     active = _make_policy(policy_identifier="SYN-ACTIVE", effective_end=None)
     retired = _make_policy(
         policy_identifier="SYN-RETIRED",
-        policy_text="1. Old policy.",
+        clause_text="Old clause.",
         effective_end=datetime.date(2024, 12, 31),
     )
     ingest_policies(session, [active, retired], FIXED_RETRIEVED_AT)
