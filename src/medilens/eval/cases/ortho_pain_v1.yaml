@@ -1,0 +1,80 @@
+# Labeled evaluation cases for the ortho/pain beachhead (CLAUDE.md section 8).
+#
+# IMPORTANT: these gold labels are SYNTHETIC, ILLUSTRATIVE PLACEHOLDERS. They
+# exist to scaffold the evaluation harness and its metrics. They have NOT been
+# adjudicated by a certified coder. Do not treat any metric computed against
+# this file as a real accuracy measurement until the labels are replaced by
+# certified-coder review. The notes are synthetic and de-identified; no real
+# PHI is present.
+#
+# Each case:
+#   id                 unique case identifier
+#   note_file          synthetic note under eval/notes/
+#   requested_service  plain-language service (no CPT descriptors)
+#   date_of_service    code sets and policy resolve against this date
+#   payer              payer name
+#   expected_codes     gold ICD-10-CM codes a coder is expected to accept
+#   expected_denied    gold label: is the claim expected to be denied as
+#                      documented? (drives denial precision/recall)
+#   expect_refusal     true when the system should refuse before the model
+#                      (for example no loaded policy governs the service)
+#   label_rationale    why the label was assigned (for the coder reviewing it)
+
+dataset: ortho_pain_v1
+specialty: Orthopedics and pain medicine
+
+cases:
+  - id: lumbar-mri-supported-medicare
+    note_file: lumbar_mri_supported.txt
+    requested_service: lumbar MRI without contrast
+    date_of_service: 2026-06-01
+    payer: Medicare
+    expected_codes: ["M54.16"]
+    expected_denied: false
+    label_rationale: >
+      Radiculopathy is documented with objective exam findings but no disc
+      disorder is confirmed on imaging yet, so M54.16 (radiculopathy, lumbar
+      region) is the most specific supported code, not a disc-disorder code.
+      Duration, completed conservative therapy, and objective findings meet the
+      MRI policy clauses, so denial is not expected.
+
+  - id: lumbar-esi-supported-commercial
+    note_file: lumbar_esi_supported.txt
+    requested_service: lumbar epidural steroid injection
+    date_of_service: 2026-06-01
+    payer: National Commercial Payer A
+    expected_codes: ["M51.16"]
+    expected_denied: false
+    label_rationale: >
+      MRI confirms a disc protrusion causing L5 radiculopathy, so M51.16
+      (intervertebral disc disorder with radiculopathy, lumbar region) is more
+      specific than a radiculopathy-only code. Conservative therapy, imaging
+      correlation, a documented pain baseline, and absence of contraindication
+      meet the ESI policy clauses, so denial is not expected.
+
+  - id: lumbar-mri-underdocumented-medicare
+    note_file: lumbar_mri_underdocumented.txt
+    requested_service: lumbar MRI without contrast
+    date_of_service: 2026-06-01
+    payer: Medicare
+    expected_codes: ["M54.16"]
+    expected_denied: true
+    label_rationale: >
+      The assessment states lumbar radiculopathy, so M54.16 may still be
+      documentation-supported, but the note omits any objective neurologic
+      findings, any completed conservative-therapy trial, and any symptom
+      duration. As documented the MRI policy criteria are not met, so a denial
+      is expected. This is the positive case for denial precision/recall.
+
+  - id: rfa-no-policy-medicare
+    note_file: lumbar_mri_supported.txt
+    requested_service: radiofrequency ablation, lumbar facet
+    date_of_service: 2026-06-01
+    payer: Medicare
+    expected_codes: []
+    expected_denied: null
+    expect_refusal: true
+    label_rationale: >
+      No loaded Medicare policy governs radiofrequency ablation, so the system
+      should refuse before any model call rather than validate against an
+      inapplicable policy. Verifies the runner scores refusals correctly.

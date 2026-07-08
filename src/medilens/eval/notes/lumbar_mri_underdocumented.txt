@@ -1,0 +1,10 @@
+SYNTHETIC NOTE. Not a real patient. Evaluation fixture only.
+
+Chief complaint: Low back pain with left leg symptoms.
+
+History of present illness: Patient reports ongoing low back pain with some
+radiation into the left leg. Requests advanced imaging.
+
+Assessment: Lumbar radiculopathy, left leg.
+
+Plan: Order lumbar MRI without contrast.

@@ -1,12 +1,15 @@
 """Command-line entrypoint.
 
-Two subcommands:
+Subcommands:
 
 - ingest: load the curated code-set and payer-policy seeds into the database.
 - validate: take a synthetic clinical note plus request metadata, run the
   reasoning pipeline (retrieve date-correct codes and policies, call the
   model, verify grounding), print the recommendation with citations and a
   denial-risk score, and write it to the append-only audit store.
+- evaluate: run the labeled synthetic evaluation set through the pipeline and
+  print the section-8 metrics (code accuracy, denial precision/recall,
+  citation correctness) with a denial-threshold sweep.
 
 The CLI stays thin: it parses arguments, loads settings, and delegates to the
 orchestration, ingestion, and reasoning modules.
@@ -77,6 +80,19 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     validate_parser.set_defaults(handler=run_validate_command)
 
+    evaluate_parser = subparsers.add_parser(
+        "evaluate",
+        help="Run the labeled synthetic evaluation set and print metrics.",
+    )
+    evaluate_parser.add_argument(
+        "--threshold",
+        type=float,
+        default=0.5,
+        help="Denial-risk threshold: a score at or above this predicts a "
+        "denial. Default 0.5. Use the printed sweep to tune it.",
+    )
+    evaluate_parser.set_defaults(handler=run_evaluate_command)
+
     return parser
 
 
@@ -143,6 +159,31 @@ def run_validate_command(settings: Settings, args: argparse.Namespace) -> None:
         recommendation_id = persist_validation(session, request, outcome, created_at)
 
     _print_outcome(outcome, recommendation_id)
+
+
+def run_evaluate_command(settings: Settings, args: argparse.Namespace) -> None:
+    """Run the labeled evaluation set through the pipeline and print metrics.
+
+    Makes one model call per case. The gold labels are synthetic placeholders,
+    so the printed numbers are a harness demonstration, not a real accuracy
+    claim until the labels are reviewed by a certified coder (CLAUDE.md
+    section 8). Reads only; writes no audit records.
+    """
+    from medilens.eval.dataset import load_default_cases
+    from medilens.eval.runner import evaluate, format_report
+
+    cases = load_default_cases()
+    prompt_template = load_prompt_template()
+    model_client = ModelClient(settings)
+
+    engine = build_engine(settings)
+    session_factory = build_session_factory(engine)
+    with session_factory() as session:
+        report = evaluate(
+            session, model_client, prompt_template, cases,
+            threshold=args.threshold,
+        )
+    print(format_report(report))
 
 
 def _print_outcome(outcome: ValidationOutcome, recommendation_id: int) -> None:

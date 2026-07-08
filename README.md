@@ -65,6 +65,20 @@ model endpoint or storing anything that could be PHI.
    uv run streamlit run src/medilens/ui/app.py
    ```
 
+9. Run the evaluation harness. It runs a labeled set of synthetic cases through the pipeline and
+   prints the section-8 metrics (code recommendation accuracy, denial-prediction precision and
+   recall, citation correctness) with a denial-threshold sweep for tuning. Requires
+   ANTHROPIC_API_KEY and an ingested database (one model call per case):
+
+   ```
+   uv run medilens evaluate
+   uv run medilens evaluate --threshold 0.4
+   ```
+
+   IMPORTANT: the shipped gold labels are synthetic placeholders, not certified-coder judgments.
+   The metrics demonstrate the harness; they are not a real accuracy claim until the labels are
+   reviewed by a certified coder. See `src/medilens/eval/cases/`.
+
 ## Layout
 
 - `src/medilens/config.py`: environment-derived settings.
@@ -104,6 +118,12 @@ model endpoint or storing anything that could be PHI.
   (SSN, email, phone, IP) before any text reaches the model, since this deployment is not
   BAA covered. A screening safety-net, not a compliant de-identifier (free-text names are not
   reliably caught).
+- `src/medilens/eval/`: the evaluation harness (CLAUDE.md section 8). A labeled set of synthetic
+  cases (`cases/` + `notes/`), pure metric functions (`metrics.py`: code accuracy, denial
+  precision/recall, citation correctness), and a runner (`runner.py`) that drives the pipeline
+  per case, scores refusals as first-class outcomes, and sweeps the denial threshold. The gold
+  labels are synthetic placeholders pending certified-coder review; no metric here is a real
+  accuracy claim until then.
 - `src/medilens/db/`: SQLAlchemy models and session setup for non-PHI operational data.
 - `src/medilens/prompts/`: versioned prompt templates.
 - `src/medilens/hashing.py`: shared content-hash primitive for change detection across ingesters.
