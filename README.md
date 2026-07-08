@@ -54,8 +54,11 @@ model endpoint or storing anything that could be PHI.
    uv run medilens validate tests/fixtures/synthetic_notes/lumbar_mri_example.txt --requested-service "lumbar MRI" --date-of-service 2026-06-01 --payer Medicare
    ```
 
-8. Run the review UI (a demo/review surface that renders a clearly-labeled SAMPLE recommendation;
-   the reasoning layer is not implemented yet, so it does not analyze the note):
+8. Run the review UI. It renders the review-surface design (denial risk, recommended codes with
+   click-to-locate note spans and cited policy clauses, documentation gaps, extracted facts, and
+   provenance). With ANTHROPIC_API_KEY and an ingested database it runs the real pipeline on the
+   submitted note and writes an audit record; without them it degrades to a clearly-labeled
+   SAMPLE that does not analyze the note. Synthetic, de-identified notes only.
 
    ```
    uv sync --extra ui
@@ -68,9 +71,12 @@ model endpoint or storing anything that could be PHI.
 - `src/medilens/cli.py`: command-line entrypoint (`ingest` and `validate` subcommands).
 - `src/medilens/ingestion.py`: orchestrates loading both seed files into the database.
 - `src/medilens/audit/`: append-only writer for recommendation and audit-log records.
-- `src/medilens/ui/`: Streamlit review surface. Renders a recommendation in a display contract
-  that mirrors the audit-store shape. Currently shows a labeled sample; the reasoning layer will
-  populate the same contract with no UI change.
+- `src/medilens/ui/`: the review surface. `recommendation_view.py` is the display contract that
+  mirrors the audit-store shape; `design.py` is a pure, escaping HTML renderer of the handoff
+  design (all model/note content is HTML-escaped; every compliance string is preserved);
+  `app.py` is the thin Streamlit host that captures input, runs the pipeline (or a labeled
+  sample), and hands the verified view to the renderer. Citation chips click to locate the
+  supporting span in the note panel.
 - `src/medilens/client/`: Anthropic API client wrapper: token-bucket rate limiting
   (requests/min and tokens/min), retries with exponential backoff and jitter on 429/529,
   retry-after support, pre-send token counting, and schema-enforced structured JSON output.

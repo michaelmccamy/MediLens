@@ -7,13 +7,17 @@ model call, grounding verification, and an append-only audit record. When
 configuration is missing, it falls back to a clearly-labeled SAMPLE so the
 surface is still demonstrable.
 
+The look is the handoff design (see medilens.ui.design). This module is the
+thin host: it owns the Streamlit widgets that capture input and the pipeline
+call, then hands the verified RecommendationView to the pure HTML renderer.
+
 Run with:
     uv run streamlit run src/medilens/ui/app.py
 
 CLAUDE.md guardrails visible in this surface:
-- Guardrail 8 (UI honesty): a persistent note that suggestions are based only on
-  documentation currently present, and to add documentation only if clinically
-  accurate.
+- Guardrail 8 (UI honesty): a persistent banner that suggestions are based only
+  on documentation currently present, and to add documentation only if
+  clinically accurate.
 - Human in the loop: every code is a suggestion for a person to review; there is
   no submit action and the tool never sends anything to a payer.
 - Grounding and provenance (guardrail 4): each code shows its supporting note
@@ -25,6 +29,7 @@ import datetime
 from pathlib import Path
 
 import streamlit as st
+import streamlit.components.v1 as components
 
 from medilens.notes.ingest import (
     load_and_normalize_upload,
@@ -33,11 +38,22 @@ from medilens.notes.ingest import (
 from medilens.phi.screening import PhiDetectedError
 from medilens.reasoning.pipeline import NoApplicablePolicyError
 from medilens.reasoning.verification import GroundingError
+from medilens.ui import design
 from medilens.ui.recommendation_view import (
     RecommendationView,
     build_sample_recommendation,
     view_from_outcome,
 )
+
+# Plain-language service labels (no CPT descriptors, guardrail: CPT out of MVP).
+# The first two match loaded policies; the others demonstrate the honest
+# "no applicable policy" refusal when no loaded policy governs the service.
+SERVICE_OPTIONS = [
+    "Lumbar MRI without contrast",
+    "Lumbar epidural steroid injection",
+    "Major joint injection, knee",
+    "Radiofrequency ablation, lumbar facet",
+]
 
 DEFAULT_PAYERS = ["Medicare", "National Commercial Payer A"]
 
@@ -71,7 +87,7 @@ def _try_load_settings():
     """Load settings, returning None (not raising) when configuration is missing.
 
     The UI degrades to the labeled sample instead of crashing, but never
-    silently: the mode banner tells the user which mode they are in.
+    silently: the top-bar pill and a sample banner tell the user the mode.
     """
     from medilens.config import load_settings
 
@@ -79,34 +95,6 @@ def _try_load_settings():
         return load_settings()
     except RuntimeError:
         return None
-
-
-def _render_sample_banner() -> None:
-    st.error(
-        "SAMPLE OUTPUT. ANTHROPIC_API_KEY or DATABASE_URL is not configured, "
-        "so this screen shows a fixed illustrative example. It does not "
-        "analyze the note. Do not use it for any real coding decision."
-    )
-
-
-def _render_live_banner(settings) -> None:
-    st.success(
-        f"Live mode: model {settings.model_name}, database configured. "
-        "Submitted notes are validated by the reasoning pipeline and written "
-        "to the audit store. Synthetic, de-identified notes only."
-    )
-
-
-def _render_honesty_notes() -> None:
-    st.info(
-        "This suggestion is based only on documentation currently present in "
-        "the note. Do not add documentation unless it is clinically accurate."
-    )
-    st.caption(
-        "Every code below is a recommendation for a certified coder or provider "
-        "to review. This tool does not make final coding decisions and never "
-        "submits anything to a payer."
-    )
 
 
 def _run_live_validation(
@@ -151,114 +139,62 @@ def _run_live_validation(
     return view, recommendation_id
 
 
-def _risk_band(score: float) -> str:
-    if score < 0.34:
-        return "Low"
-    if score < 0.67:
-        return "Moderate"
-    return "High"
+def _resolve_note_text(uploaded_file, pasted_text: str) -> str | None:
+    """Return the normalized note from the upload (preferred) or pasted text.
 
-
-def _render_recommendation(recommendation: RecommendationView) -> None:
-    st.subheader("Request")
-    st.write(f"Requested service: {recommendation.requested_service}")
-    st.write(f"Date of service: {recommendation.date_of_service.isoformat()}")
-    st.write(f"Payer: {recommendation.payer_name}")
-    st.caption(
-        "Code sets and payer policy are resolved against the date of service, "
-        "not today."
-    )
-
-    st.subheader("Recommended codes")
-    if len(recommendation.code_suggestions) == 0:
-        st.write(
-            "No supported codes found in the documentation. See the denial "
-            "risk rationale and documentation gaps below."
-        )
-    for suggestion in recommendation.code_suggestions:
-        st.markdown(
-            f"**{suggestion.code}** ({suggestion.code_system}): "
-            f"{suggestion.description}"
-        )
-        st.write(suggestion.rationale)
-
-        st.markdown("Supporting note spans:")
-        for span in suggestion.supporting_note_spans:
-            if span.is_located:
-                st.markdown(
-                    f'> "{span.text}"  \n'
-                    f"characters {span.start_offset} to {span.end_offset}"
-                )
-            else:
-                st.markdown(
-                    f'> "{span.text}"  \n'
-                    "illustrative span, not located in the current note text"
-                )
-
-        if suggestion.has_coverage_basis:
-            st.markdown("Cited policy clauses:")
-            for clause in suggestion.cited_policy_clauses:
-                st.markdown(
-                    f"- {clause.policy_identifier}, clause {clause.clause_number}: "
-                    f"{clause.clause_text}"
-                )
-        else:
-            st.warning(
-                "No coverage basis: this code is supported by the note text, "
-                "but no clause from the applicable payer policy was cited for "
-                "it. Coverage is unconfirmed; review the payer policy manually."
+    Returns None after surfacing an error card for an unsupported upload, so
+    the caller stops without running the pipeline.
+    """
+    if uploaded_file is not None:
+        try:
+            return load_and_normalize_upload(
+                uploaded_file.name, uploaded_file.getvalue()
             )
-        st.divider()
+        except ValueError as error:
+            st.markdown(
+                design.error_card_html("Unsupported file", str(error)),
+                unsafe_allow_html=True,
+            )
+            return None
+    return normalize_note_text(pasted_text)
 
-    st.subheader("Extracted facts")
-    st.caption("Facts read from the note. The tool never invents clinical facts.")
-    for fact in recommendation.extracted_facts:
-        st.markdown(f"- {fact}")
 
-    st.subheader("Documentation gaps")
-    st.caption(
-        "Each item is conditional on clinical accuracy. Do not document "
-        "anything that is not clinically true."
-    )
-    for gap in recommendation.documentation_gaps:
-        st.markdown(f"- {gap}")
-
-    st.subheader("Denial risk")
-    band = _risk_band(recommendation.denial_risk_score)
-    st.progress(recommendation.denial_risk_score)
-    st.write(f"{band} ({recommendation.denial_risk_score:.2f})")
-    st.write(recommendation.denial_risk_rationale)
-
-    if len(recommendation.verification_rejections) > 0:
-        st.subheader("Dropped by verification")
-        st.caption(
-            "The model produced these, but they failed a grounding check and "
-            "were not shown as recommendations or stored as codes. They are "
-            "listed here for transparency and are recorded in the audit trail."
-        )
-        for rejection in recommendation.verification_rejections:
-            st.markdown(f"- {rejection}")
-
-    st.subheader("Provenance")
-    st.caption("Every recommendation is reconstructable for audit.")
-    st.write(f"Model: {recommendation.model_name} ({recommendation.model_version})")
-    st.write(f"Prompt template version: {recommendation.prompt_template_version}")
-    st.write(f"Input reference: {recommendation.input_reference}")
-    st.write(f"Generated at: {recommendation.generated_at.isoformat()}")
+def _render_results(
+    view: RecommendationView, note_text: str, audit_id: int | None
+) -> None:
+    """Render the full results document (note panel + results) as a component."""
+    html_doc = design.build_results_html(view, note_text, audit_id)
+    height = design.results_height(view, note_text)
+    components.html(html_doc, height=height, scrolling=True)
 
 
 def main() -> None:
-    st.set_page_config(page_title="MediLens review", layout="wide")
-    st.title("MediLens documentation and coding review")
+    st.set_page_config(
+        page_title="MediLens · Documentation and coding review",
+        layout="wide",
+    )
+    st.markdown(design.page_css(), unsafe_allow_html=True)
 
     settings = _try_load_settings()
-    if settings is None:
-        _render_sample_banner()
-    else:
-        _render_live_banner(settings)
-    _render_honesty_notes()
+    live = settings is not None
+    model_name = settings.model_name if live else "sample"
+
+    st.markdown(design.top_bar_html(live, model_name), unsafe_allow_html=True)
+    st.markdown(design.honesty_banner_html(), unsafe_allow_html=True)
 
     with st.form("review_request"):
+        top = st.columns([2.2, 1.3, 2.0, 1.1])
+        with top[0]:
+            requested_service = st.selectbox("Requested service", SERVICE_OPTIONS)
+        with top[1]:
+            date_of_service = st.date_input(
+                "Date of service", value=datetime.date(2026, 6, 1)
+            )
+        with top[2]:
+            payer_name = st.selectbox("Payer", DEFAULT_PAYERS)
+        with top[3]:
+            st.markdown(design.dos_note_html(), unsafe_allow_html=True)
+
         uploaded_file = st.file_uploader(
             "Upload a note (.txt, .md, or .rtf), or paste one below",
             type=["txt", "md", "rtf"],
@@ -266,81 +202,76 @@ def main() -> None:
         note_text = st.text_area(
             "Clinical note (synthetic, de-identified only)",
             value=_load_default_note(),
-            height=300,
+            height=220,
         )
         st.caption(
             "If a file is uploaded, it is used instead of the pasted text. "
-            "Notes are normalized (unicode, whitespace, line endings) before "
-            "analysis. Uploaded files are screened for PHI like any other note."
+            "Notes are normalized (unicode, whitespace, line endings) and "
+            "screened for PHI before analysis."
         )
-        requested_service = st.text_input(
-            "Requested service", value="lumbar MRI"
-        )
-        date_of_service = st.date_input(
-            "Date of service", value=datetime.date(2026, 6, 1)
-        )
-        payer_name = st.selectbox("Payer", DEFAULT_PAYERS)
-        submitted = st.form_submit_button("Check documentation")
+        submitted = st.form_submit_button("Run review", type="primary")
 
     if not submitted:
         return
 
-    # An uploaded file takes precedence over the pasted text. Both paths are
-    # normalized so downstream offsets are consistent.
-    if uploaded_file is not None:
-        try:
-            note_text = load_and_normalize_upload(
-                uploaded_file.name, uploaded_file.getvalue()
-            )
-        except ValueError as error:
-            st.error(str(error))
-            return
-    else:
-        note_text = normalize_note_text(note_text)
+    resolved_note = _resolve_note_text(uploaded_file, note_text)
+    if resolved_note is None:
+        return
 
-    if settings is None:
+    if not live:
         recommendation = build_sample_recommendation(
-            note_text=note_text,
+            note_text=resolved_note,
             requested_service=requested_service,
             date_of_service=date_of_service,
             payer_name=payer_name,
             generated_at=datetime.datetime.now(datetime.timezone.utc),
         )
-        _render_sample_banner()
-        _render_recommendation(recommendation)
+        _render_results(recommendation, resolved_note, audit_id=None)
         return
 
     try:
         with st.spinner("Validating documentation against payer policy..."):
             recommendation, recommendation_id = _run_live_validation(
-                settings, note_text, requested_service, date_of_service, payer_name
+                settings, resolved_note, requested_service,
+                date_of_service, payer_name,
             )
     except PhiDetectedError as error:
-        # The note was refused before it reached the model. Show the category
-        # summary (which carries no values) and stop.
-        st.error(str(error))
+        # Refused before the model was called; the message names PHI categories
+        # only, never the values (guardrail 6).
+        st.markdown(
+            design.error_card_html("Note refused: possible PHI", str(error)),
+            unsafe_allow_html=True,
+        )
         return
     except NoApplicablePolicyError as error:
         # No loaded policy governs this payer + service. Refused before any
         # model call; the message names which services are loaded.
-        st.error(str(error))
+        st.markdown(
+            design.error_card_html("No applicable payer policy", str(error)),
+            unsafe_allow_html=True,
+        )
         return
     except GroundingError as error:
         # Output that fails a grounding gate is never rendered as a
         # recommendation and nothing was stored (guardrails 1 and 4).
-        st.error(
-            "The model output failed a grounding check and was rejected: "
-            f"{error} Nothing was stored. Please retry."
+        st.markdown(
+            design.error_card_html(
+                "Output rejected by grounding check",
+                f"{error} Nothing was stored. Please retry.",
+            ),
+            unsafe_allow_html=True,
         )
         return
     except RuntimeError as error:
         # Missing retrieval data (for example: seeds not ingested, unknown
         # payer, date outside every effective window).
-        st.error(str(error))
+        st.markdown(
+            design.error_card_html("Cannot validate", str(error)),
+            unsafe_allow_html=True,
+        )
         return
 
-    _render_recommendation(recommendation)
-    st.caption(f"Audit recommendation id: {recommendation_id}")
+    _render_results(recommendation, resolved_note, audit_id=recommendation_id)
 
 
 main()
