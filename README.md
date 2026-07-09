@@ -108,8 +108,11 @@ model endpoint or storing anything that could be PHI.
   rule engine (missing note facts fail closed to insufficient documentation; missing history
   facts defer to manual review), and retrieval is scoped by payer, specialty, and requested
   service at the date of service. A request whose service no loaded policy governs is refused
-  before any model call. The seed criteria are synthetic development data, not authoritative
-  payer text (every policy carries source.authoritative false).
+  before any model call. The seed currently covers lumbar MRI (carried by two payers at
+  different duration thresholds, so the same note can diverge by payer), lumbar ESI, lumbar
+  facet RFA, and knee major-joint injection (which ties coverage to a documentation-supported
+  diagnosis through the code_in_set operator). The seed criteria are synthetic development data,
+  not authoritative payer text (every policy carries source.authoritative false).
 - `src/medilens/reasoning/`: the reasoning pipeline. The model proposes, code disposes: the
   model extracts typed facts and per-clause judgments with verbatim evidence, `verification.py`
   checks every claim (fabricated evidence is dropped, satisfied-without-evidence downgrades,

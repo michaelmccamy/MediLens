@@ -220,12 +220,40 @@ def test_parse_seed_file_loads_v2_policies() -> None:
         "SYN-LUMBAR-MRI-001",
         "SYN-LUMBAR-ESI-001",
         "SYN-LUMBAR-RFA-001",
+        "SYN-KNEE-INJ-001",
+        "SYN-B-LUMBAR-MRI-001",
     }
     for policy in policies:
         assert policy.structure.schema_version == "policy-v2"
         assert policy.structure.source_authoritative is False
         assert len(policy.structure.clauses) > 0
         assert policy.structure_json != ""
+
+
+def test_seed_lumbar_mri_carried_by_two_payers_with_different_thresholds() -> None:
+    policies = {p.policy_identifier: p for p in parse_policy_seed_file(SEED_PATH)}
+
+    medicare = policies["SYN-LUMBAR-MRI-001"]
+    payer_b = policies["SYN-B-LUMBAR-MRI-001"]
+    assert medicare.payer_name == "Medicare"
+    assert payer_b.payer_name == "National Commercial Payer B"
+
+    medicare_duration = medicare.structure.clause_by_id("symptom_duration")
+    payer_b_duration = payer_b.structure.clause_by_id("symptom_duration")
+    # Same service, stricter commercial threshold: the divergence the eval
+    # payer-B case exercises.
+    assert medicare_duration.rule.params["minimum"] == 6
+    assert payer_b_duration.rule.params["minimum"] == 12
+
+
+def test_seed_knee_policy_uses_code_in_set() -> None:
+    policies = {p.policy_identifier: p for p in parse_policy_seed_file(SEED_PATH)}
+    knee = policies["SYN-KNEE-INJ-001"].structure
+
+    covered = knee.clause_by_id("covered_indication")
+    assert covered.evaluation == "deterministic"
+    assert covered.rule.op == "code_in_set"
+    assert "M17.12" in covered.rule.params["allowed"]
 
 
 def test_seed_mri_policy_shape() -> None:

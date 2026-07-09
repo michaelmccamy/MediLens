@@ -2,6 +2,8 @@
 
 Version: v1 snapshot, generated 2026-07-09 at commit 72728d5. System outputs are from the live run of `medilens evaluate` on the same date (model claude-sonnet-5, prompt validation_v3).
 
+> Note: the eval set grew after this snapshot was generated. Three cases are not covered by the case walkthroughs below and should be adjudicated from the current `ortho_pain_v1.yaml`: `knee-injection-supported-medicare` (knee major-joint injection, code_in_set coverage), `shoulder-injection-no-policy-medicare` (expected refusal, no governing policy), and `lumbar-mri-payerb-short-duration` (same note as case 1 under National Commercial Payer B's stricter 12-week duration, expected does_not_meet). Regenerate this packet before the review session so every current case has a walkthrough.
+
 ## Purpose and scope
 
 The evaluation gold labels were written by the developers as placeholders and have not been reviewed by a certified coder. This packet exists so a certified coder can adjudicate them case by case. Until that happens, no metric from `medilens evaluate` is a real accuracy claim.

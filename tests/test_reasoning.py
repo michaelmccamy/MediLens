@@ -612,7 +612,7 @@ def test_service_without_applicable_policy_refuses_before_model_call(
     request = ValidationRequest(
         note_text=note_text,
         input_reference=content_reference(note_text),
-        requested_service="major joint injection, knee",
+        requested_service="shoulder injection",
         date_of_service=datetime.date(2026, 6, 1),
         payer_name="Medicare",
     )

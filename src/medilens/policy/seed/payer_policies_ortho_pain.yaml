@@ -14,8 +14,16 @@
 # source in this deployment, so rules reading them defer to manual review,
 # fail closed). Each clause has a stable clause_id, an evaluation type
 # (deterministic, model_judged, hybrid, manual_review), and required: true
-# when it counts toward the overall determination. Overrides are expressed as
-# not_applicable_if_satisfied and are applied in code, never by the model.
+# when it counts toward the overall determination. Policy-level overrides are
+# expressed as a bypasses list on the trigger clause (for example a red flag)
+# and are applied in code, never by the model.
+#
+# Beachhead coverage (CLAUDE.md section 2: advanced imaging and injections for
+# ortho/pain). Lumbar MRI is carried by two payers with different thresholds
+# (Medicare 6 weeks, National Commercial Payer B 12 weeks) to exercise
+# payer-aware divergence on the same service. Lumbar ESI, lumbar facet RFA,
+# and knee major-joint injection round out the service set. The knee policy
+# ties coverage to a documented covered diagnosis via the code_in_set rule.
 #
 # Criteria never assert clinical facts; they state what the record must show
 # if clinically accurate (guardrail 1). No em dashes (formatting rule).
@@ -273,3 +281,188 @@ policies:
           required: true
           rule: { op: frequency_limit, fact: rfa_same_level_12mo, maximum: 2, window_months: 12 }
           source_ref: "SYNTHETIC clause. Illustrative. Requires claims history; defers to manual review until a history source exists."
+
+  # Knee major-joint injection. Structurally distinct from the spine policies:
+  # coverage is tied to a documented covered diagnosis through the code_in_set
+  # deterministic rule (the only policy that uses it). code_in_set reads the
+  # verified recommended codes, so it is satisfied only when the model's
+  # documentation-supported code is a covered knee condition, and fails closed
+  # (insufficient_documentation) when no code was supported.
+  - payer_name: Medicare
+    policy_identifier: SYN-KNEE-INJ-001
+    effective_start: 2025-01-01
+    effective_end: null
+    service: "Major joint injection, knee (intra-articular)"
+    service_keywords:
+      - "major joint injection"
+      - "knee injection"
+      - "intra-articular injection"
+    source: "SYNTHETIC illustrative policy for development. Not authoritative."
+    structure:
+      schema_version: policy-v2
+      version: 1
+      source:
+        type: synthetic
+        authoritative: false
+        citation: "SYNTHETIC illustrative policy. Not authoritative payer text."
+      required_facts:
+        - key: knee_conservative_therapy_duration
+          type: duration
+          unit: weeks
+          source: note
+          description: "The documented duration of conservative care for the knee (for example activity modification, an exercise program, or pharmacologic management)."
+      clauses:
+        - clause_id: covered_indication
+          title: "Covered knee diagnosis"
+          text: >
+            The documentation-supported diagnosis is a covered knee condition
+            (osteoarthritis of the knee or knee joint pain).
+          evaluation: deterministic
+          required: true
+          rule:
+            op: code_in_set
+            allowed: ["M17.11", "M17.12", "M25.561", "M25.562"]
+          source_ref: "SYNTHETIC clause. Illustrative. Ties coverage to a documented covered diagnosis."
+
+        - clause_id: symptomatic_severity
+          title: "Symptomatic with functional limitation"
+          text: >
+            Knee pain with functional limitation (for example limited walking,
+            stairs, or weight bearing) is documented.
+          evaluation: model_judged
+          required: true
+          judgment:
+            question: "Is knee pain with a functional limitation documented?"
+            requires_evidence: true
+          source_ref: "SYNTHETIC clause. Illustrative."
+
+        - clause_id: conservative_therapy
+          title: "Conservative therapy of at least 4 weeks"
+          text: >
+            A trial of conservative therapy of at least 4 weeks (for example
+            activity modification, a supervised exercise program, or
+            pharmacologic management) without adequate relief is documented.
+          evaluation: hybrid
+          required: true
+          rule: { op: min_duration, fact: knee_conservative_therapy_duration, unit: weeks, minimum: 4 }
+          judgment:
+            question: "Is a conservative-therapy trial for the knee without adequate relief documented?"
+            requires_evidence: true
+          source_ref: "SYNTHETIC clause. Illustrative."
+
+        - clause_id: contraindication_absent
+          title: "No documented contraindication"
+          text: >
+            The note documents the absence of contraindications to the
+            injection (for example no active joint infection).
+          evaluation: model_judged
+          required: true
+          judgment:
+            question: "Does the note document the absence of contraindications (for example no signs of joint infection)?"
+            requires_evidence: true
+          source_ref: "SYNTHETIC clause. Illustrative."
+
+  # National Commercial Payer B lumbar MRI: the same service as the Medicare
+  # MRI policy, with stricter thresholds, so an identical note can meet
+  # Medicare's criteria and not Payer B's. Duration requires 12 weeks (vs 6),
+  # and conservative therapy is a hybrid with its own 6-week duration check
+  # (vs Medicare's qualitative-only clause). This exercises payer-aware
+  # divergence and the min_duration rule at a second threshold. A real
+  # commercial policy would also gate on prior authorization; that would be a
+  # future manual_review or external-status clause and is omitted here to keep
+  # the divergence demonstration focused on the duration thresholds.
+  - payer_name: National Commercial Payer B
+    policy_identifier: SYN-B-LUMBAR-MRI-001
+    effective_start: 2025-01-01
+    effective_end: null
+    service: "Lumbar MRI (advanced imaging of the lumbar spine)"
+    service_keywords:
+      - "lumbar mri"
+      - "mri"
+      - "magnetic resonance imaging"
+    source: "SYNTHETIC placeholder policy for development. Not based on any specific commercial payer's proprietary policy text."
+    structure:
+      schema_version: policy-v2
+      version: 1
+      source:
+        type: synthetic
+        authoritative: false
+        citation: "SYNTHETIC placeholder policy. Not based on any specific commercial payer's proprietary policy text."
+      required_facts:
+        - key: symptom_duration
+          type: duration
+          unit: weeks
+          source: note
+          description: "How long the low back or radicular symptoms have been present, as documented."
+        - key: conservative_therapy_duration
+          type: duration
+          unit: weeks
+          source: note
+          description: "The documented duration of the conservative-therapy trial (for example physical therapy)."
+      clauses:
+        - clause_id: symptom_duration
+          title: "Symptom duration and character (12 weeks)"
+          text: >
+            Low back or radicular symptoms are documented with a duration of
+            at least 12 weeks, unless a red-flag indication is present.
+          evaluation: hybrid
+          required: true
+          rule: { op: min_duration, fact: symptom_duration, unit: weeks, minimum: 12 }
+          judgment:
+            question: "Are the documented symptoms low back or radicular in character?"
+            requires_evidence: true
+          source_ref: "SYNTHETIC clause. Illustrative. Stricter duration than the Medicare MRI policy."
+
+        - clause_id: conservative_therapy
+          title: "Conservative therapy of at least 6 weeks"
+          text: >
+            A trial of conservative therapy of at least 6 weeks (for example
+            physical therapy and pharmacologic management) without adequate
+            relief is documented, unless a red-flag indication is present.
+          evaluation: hybrid
+          required: true
+          rule: { op: min_duration, fact: conservative_therapy_duration, unit: weeks, minimum: 6 }
+          judgment:
+            question: "Is a conservative-therapy trial without adequate relief documented?"
+            requires_evidence: true
+          source_ref: "SYNTHETIC clause. Illustrative."
+
+        - clause_id: objective_findings
+          title: "Objective neurologic findings"
+          text: >
+            Objective neurologic findings on examination supporting
+            radiculopathy are documented, or their absence is explained.
+          evaluation: model_judged
+          required: true
+          judgment:
+            question: "Are objective neurologic findings supporting radiculopathy documented, or is their absence explained?"
+            requires_evidence: true
+          source_ref: "SYNTHETIC clause. Illustrative."
+
+        - clause_id: red_flag
+          title: "Red-flag override"
+          text: >
+            A red-flag indication (suspected malignancy, infection, fracture,
+            or cauda equina syndrome) is documented. When present it overrides
+            the gating requirements for this study.
+          evaluation: model_judged
+          required: false
+          bypasses:
+            - symptom_duration
+            - conservative_therapy
+            - objective_findings
+            - not_recent_duplicate
+          judgment:
+            question: "Is a red-flag indication (suspected malignancy, infection, fracture, or cauda equina syndrome) documented?"
+            requires_evidence: true
+          source_ref: "SYNTHETIC clause. Illustrative."
+
+        - clause_id: not_recent_duplicate
+          title: "No recent duplicate study"
+          text: >
+            No MRI of the same region was performed recently for the same
+            indication without an interval change in clinical status. Requires
+            claims or imaging history to verify.
+          evaluation: manual_review
+          required: true
+          source_ref: "SYNTHETIC clause. Illustrative. Requires imaging history; defers to manual review until a history source exists."

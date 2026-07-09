@@ -233,15 +233,60 @@ cases:
       code is expected. Note: this gold no-code label especially needs
       certified-coder review once the code seed broadens.
 
-  - id: knee-injection-no-policy-medicare
-    note_file: lumbar_mri_supported.txt
+  - id: knee-injection-supported-medicare
+    note_file: knee_injection_supported.txt
     requested_service: major joint injection, knee
+    date_of_service: 2026-06-01
+    payer: Medicare
+    expected_codes: ["M17.12"]
+    expected_denied: false
+    expected_determination: meets_criteria
+    expected_clause_statuses:
+      covered_indication: satisfied
+      symptomatic_severity: satisfied
+      conservative_therapy: satisfied
+      contraindication_absent: satisfied
+    label_rationale: >
+      Left knee osteoarthritis with functional limitation, an 8-week
+      conservative-therapy trial without relief, and no signs of joint
+      infection. M17.12 (unilateral primary osteoarthritis, left knee) is the
+      most specific supported code. The covered_indication clause is
+      deterministic via code_in_set: it is satisfied because the supported
+      code is a covered knee diagnosis. All four clauses resolve satisfied, so
+      the determination is meets_criteria. This is the case that exercises the
+      code_in_set operator and a new service reaching meets_criteria.
+
+  - id: shoulder-injection-no-policy-medicare
+    note_file: lumbar_mri_supported.txt
+    requested_service: shoulder injection
     date_of_service: 2026-06-01
     payer: Medicare
     expected_codes: []
     expected_denied: null
     expect_refusal: true
     label_rationale: >
-      No loaded Medicare policy governs a knee joint injection, so the system
-      should refuse before any model call rather than validate against an
-      inapplicable policy. Verifies the runner scores refusals correctly.
+      No loaded policy governs a shoulder injection, so the system should
+      refuse before any model call rather than validate against an
+      inapplicable policy. The note content is irrelevant because the refusal
+      happens before the model. Preserves the refusal-handling test now that
+      the knee service is covered.
+
+  - id: lumbar-mri-payerb-short-duration
+    note_file: lumbar_mri_supported.txt
+    requested_service: lumbar MRI without contrast
+    date_of_service: 2026-06-01
+    payer: National Commercial Payer B
+    expected_codes: ["M54.16"]
+    expected_denied: true
+    expected_determination: does_not_meet
+    expected_clause_statuses:
+      symptom_duration: not_satisfied
+    label_rationale: >
+      Payer-aware divergence: this is the SAME note as
+      lumbar-mri-supported-medicare (8 weeks of symptoms, 6 weeks of therapy),
+      which resolves manual_review under Medicare's 6-week policy. National
+      Commercial Payer B requires 12 weeks of symptoms, so the deterministic
+      min_duration rule fails affirmatively (8 < 12, not_satisfied), which
+      produces does_not_meet regardless of the other clauses, and a denial is
+      expected as documented. Targets the same-note, different-payer,
+      different-determination behavior at a second duration threshold.

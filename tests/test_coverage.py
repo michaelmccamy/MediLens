@@ -166,6 +166,47 @@ def test_hybrid_judgment_failure_wins_over_rule_pass() -> None:
     assert assessment.clause_results[0].status == "not_satisfied"
 
 
+# --- code_in_set (coverage tied to the documentation-supported code) ----------
+
+
+def _code_in_set_structure() -> PolicyStructure:
+    clause = ClauseSpec(
+        clause_id="covered", title="t", text="t",
+        evaluation="deterministic", required=True,
+        rule=RuleSpec(op="code_in_set", params={"allowed": ["M17.11", "M17.12"]}),
+    )
+    return _structure([clause])
+
+
+def test_code_in_set_satisfied_when_recommended_code_covered() -> None:
+    structure = _code_in_set_structure()
+
+    assessment = _evaluate(structure, codes=frozenset({"M17.12"}))
+
+    result = assessment.clause_results[0]
+    assert result.status == "satisfied"
+    assert result.decided_by == "rule"
+    assert assessment.determination == DETERMINATION_MEETS
+
+
+def test_code_in_set_not_satisfied_when_code_not_covered() -> None:
+    structure = _code_in_set_structure()
+
+    assessment = _evaluate(structure, codes=frozenset({"M54.16"}))
+
+    assert assessment.clause_results[0].status == "not_satisfied"
+    assert assessment.determination == DETERMINATION_DOES_NOT_MEET
+
+
+def test_code_in_set_insufficient_when_no_code_supported() -> None:
+    structure = _code_in_set_structure()
+
+    assessment = _evaluate(structure, codes=frozenset())
+
+    assert assessment.clause_results[0].status == "insufficient_documentation"
+    assert assessment.determination == DETERMINATION_INSUFFICIENT
+
+
 # --- bypass override (policy-level, computed in code) --------------------------
 
 

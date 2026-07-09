@@ -223,7 +223,9 @@ def test_load_default_cases() -> None:
     assert "lumbar-mri-supported-medicare" in ids
     assert "lumbar-mri-red-flag-medicare" in ids
     assert "lumbar-rfa-first-medicare" in ids
-    assert "knee-injection-no-policy-medicare" in ids
+    assert "knee-injection-supported-medicare" in ids
+    assert "shoulder-injection-no-policy-medicare" in ids
+    assert "lumbar-mri-payerb-short-duration" in ids
     for case in cases:
         assert "\r" not in case.note_text
         assert case.note_text.endswith("\n")
@@ -232,8 +234,16 @@ def test_load_default_cases() -> None:
 def test_case_labels_shape() -> None:
     cases = {case.case_id: case for case in load_default_cases()}
 
-    refusal = cases["knee-injection-no-policy-medicare"]
+    refusal = cases["shoulder-injection-no-policy-medicare"]
     assert refusal.expect_refusal is True
+
+    knee = cases["knee-injection-supported-medicare"]
+    assert knee.expected_determination == "meets_criteria"
+    assert "covered_indication" in knee.expected_clause_statuses
+
+    divergence = cases["lumbar-mri-payerb-short-duration"]
+    assert divergence.payer_name == "National Commercial Payer B"
+    assert divergence.expected_determination == "does_not_meet"
 
     red_flag = cases["lumbar-mri-red-flag-medicare"]
     assert red_flag.expected_determination == "meets_criteria"
@@ -284,7 +294,7 @@ def test_run_case_refused_when_no_policy(session: Session) -> None:
         session, stub, template,
         _case(
             case_id="knee",
-            requested_service="major joint injection, knee",
+            requested_service="shoulder injection",
             expect_refusal=True,
         ),
     )
@@ -361,7 +371,7 @@ def test_evaluate_counts_refusals(session: Session) -> None:
         _case(case_id="ok", expected_determination="manual_review"),
         _case(
             case_id="refuse",
-            requested_service="major joint injection, knee",
+            requested_service="shoulder injection",
             expect_refusal=True,
         ),
     ]

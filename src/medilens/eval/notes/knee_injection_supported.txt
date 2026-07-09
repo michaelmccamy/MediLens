@@ -1,0 +1,22 @@
+SYNTHETIC NOTE. Not a real patient. Evaluation fixture only.
+
+Chief complaint: Left knee pain, worsening over 6 months, limiting walking.
+
+History of present illness: Progressive left knee pain, worse with weight
+bearing and climbing stairs, now limiting the patient to less than one block
+of walking and interfering with work. Denies fever, acute redness, or rapid
+swelling.
+
+Conservative care to date: Completed 8 weeks of activity modification and a
+supervised exercise program, with naproxen, without adequate relief.
+
+Physical exam: Bony enlargement and crepitus of the left knee with reduced
+range of motion. No warmth, erythema, or effusion to suggest joint infection.
+
+Imaging: Weight-bearing radiographs show medial joint-space narrowing and
+marginal osteophytes consistent with osteoarthritis of the left knee.
+
+Assessment: Unilateral primary osteoarthritis of the left knee, symptomatic
+and functionally limiting despite conservative care.
+
+Plan: Proceed with intra-articular corticosteroid injection of the left knee.
