@@ -20,6 +20,7 @@ from medilens.policy.ingest import (
     ingest_policies,
     parse_policy_seed_file,
 )
+from medilens.policy.lint import lint_policies
 from medilens.policy.retrieval import (
     find_policy_at_date,
     list_policies_for_payer_at_date,
@@ -329,6 +330,132 @@ def test_policy_hash_changes_when_effective_end_set() -> None:
     retired = _make_policy(effective_end=datetime.date(2025, 12, 31))
 
     assert compute_policy_hash(active) != compute_policy_hash(retired)
+
+
+# --- lint (authoring-time ambiguity checks) --------------------------------
+
+
+def test_lint_accepts_the_bundled_seed() -> None:
+    policies = parse_policy_seed_file(SEED_PATH)
+
+    assert lint_policies(list(policies)) == []
+
+
+def test_lint_flags_service_label_unreachable_from_own_keywords() -> None:
+    policy = _make_policy(
+        service="Cervical MRI", service_keywords="lumbar mri"
+    )
+
+    problems = lint_policies([policy])
+
+    assert len(problems) == 1
+    assert "unreachable" in problems[0]
+
+
+def test_lint_flags_cross_service_keyword_ambiguity() -> None:
+    # The exact historical bug: both injection policies carried the joint-less
+    # phrase "major joint injection", so each request matched both.
+    knee = _make_policy(
+        policy_identifier="SYN-KNEE-TEST",
+        service="Major joint injection, knee",
+        service_keywords="knee injection,major joint injection",
+    )
+    hip = _make_policy(
+        policy_identifier="SYN-HIP-TEST",
+        service="Major joint injection, hip",
+        service_keywords="hip injection,major joint injection",
+    )
+
+    problems = lint_policies([knee, hip])
+
+    # Each label matches the other policy's joint-less keyword.
+    assert len(problems) == 2
+    for problem in problems:
+        assert "ambiguous" in problem
+
+
+def test_lint_flags_duplicate_payer_identifier() -> None:
+    first = _make_policy(clause_text="First version.")
+    second = _make_policy(clause_text="Second version.")
+
+    problems = lint_policies([first, second])
+
+    assert any("duplicate" in problem for problem in problems)
+
+
+def test_lint_allows_same_service_across_payers() -> None:
+    # The lumbar MRI service is carried by Medicare and Payer B: different
+    # payers never conflict, because retrieval scopes by payer first.
+    medicare = _make_policy(payer_name="Medicare", policy_identifier="SYN-A")
+    payer_b = _make_policy(
+        payer_name="National Commercial Payer B", policy_identifier="SYN-B"
+    )
+
+    assert lint_policies([medicare, payer_b]) == []
+
+
+def test_ingest_rejects_ambiguous_batch(session: Session) -> None:
+    knee = _make_policy(
+        policy_identifier="SYN-KNEE-TEST",
+        service="Major joint injection, knee",
+        service_keywords="knee injection,major joint injection",
+    )
+    hip = _make_policy(
+        policy_identifier="SYN-HIP-TEST",
+        service="Major joint injection, hip",
+        service_keywords="hip injection,major joint injection",
+    )
+
+    with pytest.raises(ValueError, match="ambiguous"):
+        ingest_policies(session, [knee, hip], FIXED_RETRIEVED_AT)
+
+    assert session.query(PayerPolicy).count() == 0
+
+
+def test_ingest_rejects_conflict_with_already_loaded_policies(
+    session: Session,
+) -> None:
+    # A file that is clean on its own must still be rejected when it is
+    # ambiguous against a policy already current in the database.
+    existing = _make_policy(
+        policy_identifier="SYN-WIDGET-001",
+        service="Widget procedure",
+        service_keywords="widget procedure",
+    )
+    ingest_policies(session, [existing], FIXED_RETRIEVED_AT)
+
+    incoming = _make_policy(
+        policy_identifier="SYN-WIDGET-RIGHT-001",
+        service="Widget procedure, right side",
+        service_keywords="widget procedure right",
+    )
+
+    with pytest.raises(ValueError, match="ambiguous"):
+        ingest_policies(session, [incoming], FIXED_RETRIEVED_AT)
+
+
+def test_ingest_allows_batch_that_fixes_a_loaded_ambiguity(
+    session: Session,
+) -> None:
+    # Re-ingesting the SAME identifier with narrowed keywords must not be
+    # blocked by the stale row it supersedes.
+    broad = _make_policy(
+        policy_identifier="SYN-WIDGET-001",
+        service="Widget procedure, left side",
+        service_keywords="widget procedure",
+    )
+    ingest_policies(session, [broad], FIXED_RETRIEVED_AT)
+
+    narrowed = _make_policy(
+        policy_identifier="SYN-WIDGET-001",
+        service="Widget procedure, left side",
+        service_keywords="widget procedure left",
+    )
+    later = FIXED_RETRIEVED_AT + datetime.timedelta(days=1)
+    result = ingest_policies(session, [narrowed], later)
+
+    assert result.written == 1
+    assert result.superseded == 1
 
 
 # --- ingestion -----------------------------------------------------------

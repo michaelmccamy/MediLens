@@ -26,6 +26,7 @@ from sqlalchemy.orm import Session
 
 from medilens.db.models import PayerPolicy
 from medilens.hashing import hash_content
+from medilens.policy.lint import lint_policies
 from medilens.policy.structure import (
     PolicyStructure,
     parse_policy_structure,
@@ -184,6 +185,41 @@ def parse_policy_seed_file(seed_path: Path) -> list[ParsedPolicy]:
     return parsed_policies
 
 
+def _reject_ambiguous_policy_set(
+    session: Session, parsed_policies: list[ParsedPolicy]
+) -> None:
+    """Fail loudly when the post-ingest current set would be ambiguous.
+
+    The lint runs on the projection of what will be current after the run:
+    the incoming batch, plus every current database row whose payer and
+    identifier the batch does not carry (those rows survive the run
+    unchanged, so a conflict with them is just as live as one inside the
+    batch). Rows the batch does carry are about to be superseded or matched,
+    so their old keywords are excluded: a batch that fixes an ambiguity must
+    not be blocked by the very rows it replaces.
+    """
+    batch_identities: set[tuple[str, str]] = set()
+    for policy in parsed_policies:
+        batch_identities.add((policy.payer_name, policy.policy_identifier))
+
+    surviving_query = select(PayerPolicy).where(PayerPolicy.superseded_at.is_(None))
+    surviving_rows = session.execute(surviving_query).scalars().all()
+
+    projected: list = list(parsed_policies)
+    for row in surviving_rows:
+        if (row.payer_name, row.policy_identifier) in batch_identities:
+            continue
+        projected.append(row)
+
+    problems = lint_policies(projected)
+    if len(problems) > 0:
+        problem_lines = "\n- ".join(problems)
+        raise ValueError(
+            "refusing to ingest an ambiguous policy set; fix these before "
+            f"loading:\n- {problem_lines}"
+        )
+
+
 @dataclass(frozen=True)
 class PolicyIngestResult:
     """Counts from one policy ingest run.
@@ -222,7 +258,15 @@ def ingest_policies(
     Retrieval consulting a stale version's service keywords was a live bug
     (see test_superseded_version_keywords_do_not_match); superseding at ingest
     removes the ambiguity at the source.
+
+    Before anything is written, the set of policies that would be current
+    after this run (the batch plus the database's current rows the batch does
+    not replace) is linted for keyword ambiguity, and any problem aborts the
+    whole run. Loading an ambiguous set would let one request be judged
+    against two different services, so failing loudly here is the guard.
     """
+    _reject_ambiguous_policy_set(session, parsed_policies)
+
     written_count = 0
     superseded_count = 0
     for policy in parsed_policies:

@@ -3,6 +3,12 @@
 Subcommands:
 
 - ingest: load the curated code-set and payer-policy seeds into the database.
+  --policy-seed loads a custom policy YAML file instead of the bundled seed,
+  which is how a curated policy authored outside the repo gets in.
+- check-policies: dry-run validation of a policy YAML file. Parses the
+  policy-v2 structure, lints the set for keyword ambiguity, and prints what
+  would be loaded, without touching the database. Run this before ingesting
+  a hand-authored file (see docs/policy-authoring.md).
 - validate: take a synthetic clinical note plus request metadata, run the
   reasoning pipeline (retrieve date-correct codes and policies, call the
   model, verify grounding), print the recommendation with citations and a
@@ -52,7 +58,24 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "ingest",
         help="Load the curated code-set and payer-policy seeds into the database.",
     )
+    ingest_parser.add_argument(
+        "--policy-seed",
+        default=None,
+        help="Path to a policy YAML file to load instead of the bundled "
+        "seed. Author it on the policy-v2 mold (docs/policy-authoring.md) "
+        "and dry-run it with check-policies first.",
+    )
     ingest_parser.set_defaults(handler=run_ingest_command)
+
+    check_parser = subparsers.add_parser(
+        "check-policies",
+        help="Validate a policy YAML file without touching the database.",
+    )
+    check_parser.add_argument(
+        "policy_path",
+        help="Path to the policy YAML file to parse and lint.",
+    )
+    check_parser.set_defaults(handler=run_check_policies_command)
 
     validate_parser = subparsers.add_parser(
         "validate",
@@ -115,17 +138,64 @@ def run_ingest_command(settings: Settings, args: argparse.Namespace) -> None:
     upgrade_schema(engine)
     session_factory = build_session_factory(engine)
 
+    policy_seed_path: Path | None = None
+    if args.policy_seed is not None:
+        policy_seed_path = Path(args.policy_seed)
+        if not policy_seed_path.exists():
+            raise SystemExit(f"--policy-seed file not found: {policy_seed_path}")
+
     # A real record-creation timestamp: this marks when the data was ingested,
     # which is ingestion metadata, not a date-of-service resolution (so using
     # the current time here does not conflict with guardrail 5).
     retrieved_at = datetime.datetime.now(datetime.timezone.utc)
 
     with session_factory() as session:
-        summary = run_ingestion(session, retrieved_at)
+        summary = run_ingestion(
+            session, retrieved_at, policy_seed_path=policy_seed_path
+        )
 
     print(f"code_entries_written: {summary.code_entries_written}")
     print(f"policies_written: {summary.policies_written}")
     print(f"policies_superseded: {summary.policies_superseded}")
+
+
+def run_check_policies_command(settings: Settings, args: argparse.Namespace) -> None:
+    """Dry-run a policy YAML file: parse, lint, and report; never write.
+
+    settings is unused (no database is touched) but kept for the uniform
+    handler signature. Structure problems fail at parse time with a locating
+    message; ambiguity problems are printed together so an author fixes them
+    in one pass. Exits nonzero on any problem so this can gate a script.
+    """
+    from medilens.policy.ingest import parse_policy_seed_file
+    from medilens.policy.lint import lint_policies
+
+    policy_path = Path(args.policy_path)
+    if not policy_path.exists():
+        raise SystemExit(f"policy file not found: {policy_path}")
+
+    parsed_policies = parse_policy_seed_file(policy_path)
+
+    print(f"parsed {len(parsed_policies)} policies from {policy_path}")
+    for policy in parsed_policies:
+        clause_count = len(policy.structure.clauses)
+        print(
+            f"  {policy.policy_identifier}  payer={policy.payer_name!r}  "
+            f"service={policy.service!r}  clauses={clause_count}"
+        )
+
+    problems = lint_policies(list(parsed_policies))
+    if len(problems) > 0:
+        print("\nPROBLEMS (fix before ingesting):")
+        for problem in problems:
+            print(f"- {problem}")
+        raise SystemExit(1)
+
+    print(
+        "\nclean: structure valid, no keyword ambiguity within this file. "
+        "Note: ingest also lints against the policies already loaded, so a "
+        "conflict with an existing policy is still caught at ingest time."
+    )
 
 
 def run_validate_command(settings: Settings, args: argparse.Namespace) -> None:
