@@ -46,16 +46,22 @@ from medilens.ui.recommendation_view import (
 )
 
 # Plain-language service labels (no CPT descriptors, guardrail: CPT out of MVP).
-# The first two match loaded policies; the others demonstrate the honest
-# "no applicable policy" refusal when no loaded policy governs the service.
-SERVICE_OPTIONS = [
+# In live mode the dropdowns are derived from the loaded policies (see
+# _load_form_options) so a newly ingested policy appears without a code
+# change; these static lists are the sample-mode and unreachable-database
+# fallback only.
+FALLBACK_SERVICE_OPTIONS = [
     "Lumbar MRI without contrast",
     "Lumbar epidural steroid injection",
     "Major joint injection, knee",
     "Radiofrequency ablation, lumbar facet",
 ]
 
-DEFAULT_PAYERS = ["Medicare", "National Commercial Payer A"]
+FALLBACK_PAYERS = ["Medicare", "National Commercial Payer A"]
+
+# Always offered alongside the covered services. No loaded policy governs it,
+# so selecting it demonstrates the honest "no applicable policy" refusal.
+REFUSAL_DEMO_SERVICE = "Shoulder injection"
 
 FALLBACK_NOTE = (
     "SYNTHETIC NOTE. Not a real patient. For testing only.\n\n"
@@ -95,6 +101,58 @@ def _try_load_settings():
         return load_settings()
     except RuntimeError:
         return None
+
+
+def _load_form_options(settings) -> tuple[list[str], list[str]]:
+    """Derive the service and payer dropdown options from the loaded policies.
+
+    Reads the current (not superseded) policy rows so the form always reflects
+    what the system can actually assess: a hardcoded list silently drifts
+    every time a policy is ingested, which is how the hip injection policy
+    went missing from this form. The policy service labels are safe request
+    strings (each one service-matches exactly its own policy), and the
+    refusal-demo service is appended so the honest refusal path stays
+    demonstrable. Falls back to the static lists in sample mode or when the
+    database is unreachable; the validation run itself still fails loudly in
+    that case, so the fallback hides nothing.
+    """
+    fallback_services = list(FALLBACK_SERVICE_OPTIONS)
+    fallback_services.append(REFUSAL_DEMO_SERVICE)
+    if settings is None:
+        return fallback_services, list(FALLBACK_PAYERS)
+
+    from sqlalchemy.exc import SQLAlchemyError
+
+    from medilens.db.models import PayerPolicy
+    from medilens.db.session import build_engine, build_session_factory
+
+    try:
+        engine = build_engine(settings)
+        session_factory = build_session_factory(engine)
+        with session_factory() as session:
+            rows = (
+                session.query(PayerPolicy.service, PayerPolicy.payer_name)
+                .filter(PayerPolicy.superseded_at.is_(None))
+                .all()
+            )
+    except SQLAlchemyError:
+        return fallback_services, list(FALLBACK_PAYERS)
+
+    services: list[str] = []
+    payers: list[str] = []
+    for service, payer_name in rows:
+        if service and service not in services:
+            services.append(service)
+        if payer_name and payer_name not in payers:
+            payers.append(payer_name)
+    if len(services) == 0 or len(payers) == 0:
+        # Empty database (ingest has not run): the static lists at least
+        # render a working form.
+        return fallback_services, list(FALLBACK_PAYERS)
+    services.sort()
+    payers.sort()
+    services.append(REFUSAL_DEMO_SERVICE)
+    return services, payers
 
 
 def _run_live_validation(
@@ -182,16 +240,18 @@ def main() -> None:
     st.markdown(design.top_bar_html(live, model_name), unsafe_allow_html=True)
     st.markdown(design.honesty_banner_html(), unsafe_allow_html=True)
 
+    service_options, payer_options = _load_form_options(settings)
+
     with st.form("review_request"):
         top = st.columns([2.2, 1.3, 2.0, 1.1])
         with top[0]:
-            requested_service = st.selectbox("Requested service", SERVICE_OPTIONS)
+            requested_service = st.selectbox("Requested service", service_options)
         with top[1]:
             date_of_service = st.date_input(
                 "Date of service", value=datetime.date(2026, 6, 1)
             )
         with top[2]:
-            payer_name = st.selectbox("Payer", DEFAULT_PAYERS)
+            payer_name = st.selectbox("Payer", payer_options)
         with top[3]:
             st.markdown(design.dos_note_html(), unsafe_allow_html=True)
 
