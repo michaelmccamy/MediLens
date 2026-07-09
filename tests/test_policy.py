@@ -222,6 +222,7 @@ def test_parse_seed_file_loads_v2_policies() -> None:
         "SYN-LUMBAR-RFA-001",
         "SYN-KNEE-INJ-001",
         "SYN-B-LUMBAR-MRI-001",
+        "SYN-HIP-INJ-001",
     }
     for policy in policies:
         assert policy.structure.schema_version == "policy-v2"
@@ -254,6 +255,28 @@ def test_seed_knee_policy_uses_code_in_set() -> None:
     assert covered.evaluation == "deterministic"
     assert covered.rule.op == "code_in_set"
     assert "M17.12" in covered.rule.params["allowed"]
+
+
+def test_seed_hip_policy_generalizes_code_in_set_to_second_joint() -> None:
+    policies = {p.policy_identifier: p for p in parse_policy_seed_file(SEED_PATH)}
+    hip = policies["SYN-HIP-INJ-001"].structure
+
+    # code_in_set on hip codes, distinct from the knee policy's allowed set.
+    covered = hip.clause_by_id("covered_indication")
+    assert covered.evaluation == "deterministic"
+    assert covered.rule.op == "code_in_set"
+    assert set(covered.rule.params["allowed"]) == {
+        "M16.11",
+        "M16.12",
+        "M25.551",
+        "M25.552",
+    }
+
+    # The hip-specific criterion: a deep joint requires image guidance.
+    guidance = hip.clause_by_id("image_guidance")
+    assert guidance.evaluation == "model_judged"
+    assert guidance.required is True
+    assert guidance.judgment.requires_evidence is True
 
 
 def test_seed_mri_policy_shape() -> None:
@@ -438,6 +461,25 @@ def test_service_never_matches_empty_keywords_or_request() -> None:
     # Legacy rows (pre-service-matching) have empty keywords: never matched.
     assert not service_matches("lumbar MRI", "")
     assert not service_matches("", "mri")
+
+
+def test_seed_injection_policies_disambiguate_by_joint() -> None:
+    # Regression: the knee and hip injection policies must never both match one
+    # request. A joint-less keyword (for example a bare "major joint injection")
+    # is a token-subset of both a knee and a hip request and cross-matches, so a
+    # knee note would be judged against the hip policy's covered-diagnosis set
+    # (and vice versa) and fail. Every injection keyword must carry its joint.
+    policies = {p.policy_identifier: p for p in parse_policy_seed_file(SEED_PATH)}
+    knee_keywords = policies["SYN-KNEE-INJ-001"].service_keywords
+    hip_keywords = policies["SYN-HIP-INJ-001"].service_keywords
+
+    assert service_matches("major joint injection, knee", knee_keywords)
+    assert not service_matches("major joint injection, knee", hip_keywords)
+    assert service_matches("major joint injection, hip", hip_keywords)
+    assert not service_matches("major joint injection, hip", knee_keywords)
+    # A request that names no joint matches neither and is refused upstream.
+    assert not service_matches("major joint injection", knee_keywords)
+    assert not service_matches("major joint injection", hip_keywords)
 
 
 def test_list_policies_for_service_filters_by_service(session: Session) -> None:

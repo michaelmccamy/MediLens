@@ -129,24 +129,35 @@ class ValidationOutcome:
     output_tokens: int
 
 
-def _latest_structured_policies(
-    matched: list[PayerPolicy],
-) -> list[tuple[PayerPolicy, PolicyStructure]]:
-    """Pick the newest version of each matched policy and parse its structure.
+def _latest_versions(policies: list[PayerPolicy]) -> list[PayerPolicy]:
+    """Reduce to the newest ingested version of each policy identifier.
 
-    Multiple in-force versions of the same identifier can coexist (versioning
-    is append-only); the most recently ingested one is what a coder would be
-    shown. A newest version without structure predates schema v2 and cannot be
-    evaluated: that is a loud configuration error, not a silent skip.
+    Versioning is append-only (section 4), so several versions of one
+    identifier can be in force on the same date. Only the newest is current,
+    and retrieval must consult it alone. In particular, service matching must
+    run against current keywords only: a superseded version whose service
+    keywords have since been narrowed must never match a request the current
+    version rejects. Deduplicating before service matching, not after, is what
+    makes that hold.
     """
     latest_by_identifier: dict[str, PayerPolicy] = {}
-    for policy in matched:
+    for policy in policies:
         existing = latest_by_identifier.get(policy.policy_identifier)
         if existing is None or policy.retrieved_at > existing.retrieved_at:
             latest_by_identifier[policy.policy_identifier] = policy
+    return list(latest_by_identifier.values())
 
+
+def _structured_policies(
+    matched: list[PayerPolicy],
+) -> list[tuple[PayerPolicy, PolicyStructure]]:
+    """Parse the structure of each matched (already current) policy.
+
+    A matched policy without structure predates schema v2 and cannot be
+    evaluated: that is a loud configuration error, not a silent skip.
+    """
     structured: list[tuple[PayerPolicy, PolicyStructure]] = []
-    for policy in latest_by_identifier.values():
+    for policy in matched:
         structure = structure_from_json(
             policy.structure_json, policy.policy_identifier
         )
@@ -198,16 +209,20 @@ def run_validation(
             "without policy grounding"
         )
 
+    # Reduce to the current version of each policy before matching, so a
+    # superseded version's stale service keywords can never govern retrieval.
+    current_policies = _latest_versions(payer_policies)
+
     # Only policies that govern the requested service reach the model. Feeding
     # an inapplicable policy produces confused half-answers; refusing here is
     # the honest outcome (section 7) and costs no model call.
     matched = []
-    for policy in payer_policies:
+    for policy in current_policies:
         if service_matches(request.requested_service, policy.service_keywords):
             matched.append(policy)
     if len(matched) == 0:
         available_services: list[str] = []
-        for policy in payer_policies:
+        for policy in current_policies:
             if policy.service and policy.service not in available_services:
                 available_services.append(policy.service)
         raise NoApplicablePolicyError(
@@ -216,7 +231,7 @@ def run_validation(
             available_services=available_services,
         )
 
-    structured_policies = _latest_structured_policies(matched)
+    structured_policies = _structured_policies(matched)
 
     user_content = build_user_content(
         note_text=request.note_text,

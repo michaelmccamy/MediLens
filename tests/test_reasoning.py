@@ -24,10 +24,11 @@ import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
-from medilens.db.models import AuditLogEntry, Base, Recommendation
+from medilens.db.models import AuditLogEntry, Base, PayerPolicy, Recommendation
 from medilens.ingestion import run_ingestion
 from medilens.phi.screening import PhiDetectedError
 from medilens.reasoning.pipeline import (
+    BEACHHEAD_SPECIALTY,
     NoApplicablePolicyError,
     ValidationRequest,
     content_reference,
@@ -622,6 +623,57 @@ def test_service_without_applicable_policy_refuses_before_model_call(
 
     assert len(stub.calls) == 0
     assert "Lumbar MRI" in str(exc_info.value)
+
+
+def _version_row(
+    keywords: str, retrieved_at: datetime.datetime
+) -> PayerPolicy:
+    """A synthetic PayerPolicy version row for the same identifier."""
+    return PayerPolicy(
+        payer_name="Version Test Payer",
+        policy_identifier="SYN-VERSION-001",
+        specialty=BEACHHEAD_SPECIALTY,
+        service="Widget procedure",
+        service_keywords=keywords,
+        policy_text="",
+        structure_json="",
+        effective_start=datetime.date(2025, 1, 1),
+        effective_end=None,
+        source="SYNTHETIC test policy. Not authoritative.",
+        retrieved_at=retrieved_at,
+        content_hash="hash-" + keywords.replace(" ", "-"),
+    )
+
+
+def test_superseded_version_keywords_do_not_match(session: Session) -> None:
+    # Regression: service matching must consult only the current version of a
+    # policy. An older version matched a broad phrase; a newer version narrowed
+    # the keywords. A request that only the stale broad keyword would accept
+    # must now be refused (and reach no model), because the current version
+    # rejects it. Before the fix, the broad keyword on the superseded version
+    # still matched and pulled the wrong policy in.
+    old = _version_row("widget procedure", datetime.datetime(2026, 1, 1, 0, 0, 0))
+    new = _version_row(
+        "widget procedure left", datetime.datetime(2026, 2, 1, 0, 0, 0)
+    )
+    session.add(old)
+    session.add(new)
+    session.flush()
+
+    note = "SYNTHETIC NOTE. Widget procedure of the right side requested."
+    stub = StubModelClient(_make_valid_output())
+    template = load_prompt_template()
+    request = ValidationRequest(
+        note_text=note,
+        input_reference=content_reference(note),
+        requested_service="widget procedure right",
+        date_of_service=datetime.date(2026, 6, 1),
+        payer_name="Version Test Payer",
+    )
+
+    with pytest.raises(NoApplicablePolicyError):
+        run_validation(session, stub, request, template)
+    assert len(stub.calls) == 0
 
 
 def test_unknown_payer_fails_loudly(session: Session, note_text: str) -> None:

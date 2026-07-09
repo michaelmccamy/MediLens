@@ -293,10 +293,15 @@ policies:
     effective_start: 2025-01-01
     effective_end: null
     service: "Major joint injection, knee (intra-articular)"
+    # Every keyword carries the joint token. A joint-less phrase (for example a
+    # bare "major joint injection") is also a token-subset of a hip request and
+    # would match the hip policy too, so joint injections must be disambiguated
+    # by joint. A request that names no joint matches nothing and is refused,
+    # which is correct: the joint is required to assess coverage.
     service_keywords:
-      - "major joint injection"
       - "knee injection"
-      - "intra-articular injection"
+      - "major joint injection knee"
+      - "intra-articular knee injection"
     source: "SYNTHETIC illustrative policy for development. Not authoritative."
     structure:
       schema_version: policy-v2
@@ -466,3 +471,99 @@ policies:
           evaluation: manual_review
           required: true
           source_ref: "SYNTHETIC clause. Illustrative. Requires imaging history; defers to manual review until a history source exists."
+
+  # Hip major-joint injection. Parallels the knee injection policy (coverage
+  # tied to a documented covered diagnosis via code_in_set) but adds an
+  # image-guidance clause: the hip is a deep joint, so payers commonly require
+  # that fluoroscopic or ultrasound guidance is documented or planned. That is a
+  # documentation-sufficiency element, not a CPT descriptor. Demonstrates the
+  # code_in_set mold generalizing to a second joint with a joint-specific
+  # criterion.
+  - payer_name: Medicare
+    policy_identifier: SYN-HIP-INJ-001
+    effective_start: 2025-01-01
+    effective_end: null
+    service: "Major joint injection, hip (intra-articular)"
+    # Joint-specific keywords (see the knee policy note): every phrase carries
+    # the hip token so a knee request cannot match this policy and vice versa.
+    service_keywords:
+      - "hip injection"
+      - "major joint injection hip"
+      - "intra-articular hip injection"
+    source: "SYNTHETIC illustrative policy for development. Not authoritative."
+    structure:
+      schema_version: policy-v2
+      version: 1
+      source:
+        type: synthetic
+        authoritative: false
+        citation: "SYNTHETIC illustrative policy. Not authoritative payer text."
+      required_facts:
+        - key: hip_conservative_therapy_duration
+          type: duration
+          unit: weeks
+          source: note
+          description: "The documented duration of conservative care for the hip (for example activity modification, an exercise program, or pharmacologic management)."
+      clauses:
+        - clause_id: covered_indication
+          title: "Covered hip diagnosis"
+          text: >
+            The documentation-supported diagnosis is a covered hip condition
+            (osteoarthritis of the hip or hip joint pain).
+          evaluation: deterministic
+          required: true
+          rule:
+            op: code_in_set
+            allowed: ["M16.11", "M16.12", "M25.551", "M25.552"]
+          source_ref: "SYNTHETIC clause. Illustrative. Ties coverage to a documented covered diagnosis."
+
+        - clause_id: symptomatic_severity
+          title: "Symptomatic with functional limitation"
+          text: >
+            Hip pain with functional limitation (for example limited walking,
+            weight bearing, or stairs) is documented.
+          evaluation: model_judged
+          required: true
+          judgment:
+            question: "Is hip pain with a functional limitation documented?"
+            requires_evidence: true
+          source_ref: "SYNTHETIC clause. Illustrative."
+
+        - clause_id: conservative_therapy
+          title: "Conservative therapy of at least 4 weeks"
+          text: >
+            A trial of conservative therapy of at least 4 weeks (for example
+            activity modification, a supervised exercise program, or
+            pharmacologic management) without adequate relief is documented.
+          evaluation: hybrid
+          required: true
+          rule: { op: min_duration, fact: hip_conservative_therapy_duration, unit: weeks, minimum: 4 }
+          judgment:
+            question: "Is a conservative-therapy trial for the hip without adequate relief documented?"
+            requires_evidence: true
+          source_ref: "SYNTHETIC clause. Illustrative."
+
+        - clause_id: image_guidance
+          title: "Image guidance for a deep joint"
+          text: >
+            Because the hip is a deep joint, image guidance (for example
+            fluoroscopic or ultrasound guidance) for the injection is documented
+            or planned. This is a documentation element, not a procedure code.
+          evaluation: model_judged
+          required: true
+          judgment:
+            question: "Is image guidance (fluoroscopic or ultrasound) for the hip injection documented or planned?"
+            requires_evidence: true
+          source_ref: "SYNTHETIC clause. Illustrative."
+
+        - clause_id: contraindication_absent
+          title: "No documented contraindication"
+          text: >
+            The note documents the absence of contraindications to the
+            injection (for example no active joint infection).
+          evaluation: model_judged
+          required: true
+          judgment:
+            question: "Does the note document the absence of contraindications (for example no signs of joint infection)?"
+            requires_evidence: true
+          source_ref: "SYNTHETIC clause. Illustrative."

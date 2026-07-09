@@ -256,6 +256,31 @@ cases:
       the determination is meets_criteria. This is the case that exercises the
       code_in_set operator and a new service reaching meets_criteria.
 
+  - id: hip-injection-supported-medicare
+    note_file: hip_injection_supported.txt
+    requested_service: major joint injection, hip
+    date_of_service: 2026-06-01
+    payer: Medicare
+    expected_codes: ["M16.12"]
+    expected_denied: false
+    expected_determination: meets_criteria
+    expected_clause_statuses:
+      covered_indication: satisfied
+      symptomatic_severity: satisfied
+      conservative_therapy: satisfied
+      image_guidance: satisfied
+      contraindication_absent: satisfied
+    label_rationale: >
+      Left hip osteoarthritis with functional limitation, an 8-week
+      conservative-therapy trial without relief, fluoroscopic guidance planned
+      (the hip is a deep joint), and no signs of joint infection. M16.12
+      (unilateral primary osteoarthritis, left hip) is the most specific
+      supported code. covered_indication is deterministic via code_in_set:
+      satisfied because the supported code is a covered hip diagnosis. All five
+      clauses resolve satisfied, so the determination is meets_criteria. This
+      case exercises code_in_set on a second joint and the hip-specific
+      image_guidance clause.
+
   - id: shoulder-injection-no-policy-medicare
     note_file: lumbar_mri_supported.txt
     requested_service: shoulder injection

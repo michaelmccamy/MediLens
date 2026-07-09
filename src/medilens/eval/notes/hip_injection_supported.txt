@@ -1,0 +1,25 @@
+SYNTHETIC NOTE. Not a real patient. Evaluation fixture only.
+
+Chief complaint: Left hip pain, worsening over 8 months, limiting walking.
+
+History of present illness: Progressive left hip and groin pain, worse with
+weight bearing and prolonged standing, now limiting the patient to less than
+two blocks of walking and interfering with work. Denies fever, night sweats,
+or rapid onset swelling.
+
+Conservative care to date: Completed 8 weeks of activity modification and a
+supervised physical therapy program, with acetaminophen and a trial of an
+oral anti-inflammatory, without adequate relief.
+
+Physical exam: Reduced and painful internal rotation of the left hip with a
+positive log-roll. Antalgic gait. No warmth, erythema, or overlying skin
+changes to suggest joint infection.
+
+Imaging: Weight-bearing radiographs show superior joint-space narrowing and
+marginal osteophytes consistent with osteoarthritis of the left hip.
+
+Assessment: Unilateral primary osteoarthritis of the left hip, symptomatic
+and functionally limiting despite conservative care.
+
+Plan: Proceed with intra-articular corticosteroid injection of the left hip
+under fluoroscopic guidance given the depth of the joint.
