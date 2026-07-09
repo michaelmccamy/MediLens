@@ -108,7 +108,11 @@ model endpoint or storing anything that could be PHI.
   rule engine (missing note facts fail closed to insufficient documentation; missing history
   facts defer to manual review), and retrieval is scoped by payer, specialty, and requested
   service at the date of service. A request whose service no loaded policy governs is refused
-  before any model call. The seed currently covers lumbar MRI (carried by two payers at
+  before any model call. Policy records version by supersession: re-ingesting changed content
+  stamps the prior version superseded (kept forever for audit, never consulted by retrieval),
+  so exactly one current version of each policy exists and a stale version's service keywords
+  can never govern a request. Real-world payer effective dates are a separate axis
+  (effective_start and effective_end) and are never used to express curation versions. The seed currently covers lumbar MRI (carried by two payers at
   different duration thresholds, so the same note can diverge by payer), lumbar ESI, lumbar
   facet RFA, and knee and hip major-joint injections (which tie coverage to a
   documentation-supported diagnosis through the code_in_set operator, disambiguated per joint).

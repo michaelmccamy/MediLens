@@ -55,11 +55,15 @@ def find_policy_at_date(
 
     None means the payer had no such policy in force on that date. The caller
     must treat that as "no governing policy found" rather than assuming
-    coverage or non-coverage (CLAUDE.md guardrail 4).
+    coverage or non-coverage (CLAUDE.md guardrail 4). Only the current version
+    is consulted: superseded rows are audit history, and a stale version
+    answering a live query would resurrect exactly the content a re-ingest
+    replaced.
     """
     query = select(PayerPolicy).where(
         (PayerPolicy.payer_name == payer_name)
         & (PayerPolicy.policy_identifier == policy_identifier)
+        & (PayerPolicy.superseded_at.is_(None))
         & effective_date_window(PayerPolicy, date_of_service)
     )
     result_row = session.execute(query).scalar_one_or_none()
@@ -75,13 +79,17 @@ def list_policies_for_payer_at_date(
     """Return a payer's policies for a specialty in force on the date of service.
 
     Feeds the reasoning layer the date-correct policy set for a request instead
-    of the whole table, scoped to the requesting payer and specialty.
+    of the whole table, scoped to the requesting payer and specialty. Only
+    current versions are returned; superseded rows are audit history and must
+    never govern retrieval (in particular their stale service keywords must
+    never match a request).
     """
     query = (
         select(PayerPolicy)
         .where(
             (PayerPolicy.payer_name == payer_name)
             & (PayerPolicy.specialty == specialty)
+            & (PayerPolicy.superseded_at.is_(None))
             & effective_date_window(PayerPolicy, date_of_service)
         )
         .order_by(PayerPolicy.policy_identifier)

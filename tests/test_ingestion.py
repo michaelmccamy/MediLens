@@ -35,9 +35,10 @@ def test_run_ingestion_is_idempotent(session: Session) -> None:
 
     assert first.code_entries_written > 0
     assert first.policies_written > 0
-    # A second run over unchanged seeds writes nothing.
+    # A second run over unchanged seeds writes and supersedes nothing.
     assert second.code_entries_written == 0
     assert second.policies_written == 0
+    assert second.policies_superseded == 0
     # Row counts are unchanged from the first run.
     assert session.query(CodeSetEntry).count() == first.code_entries_written
     assert session.query(PayerPolicy).count() == first.policies_written

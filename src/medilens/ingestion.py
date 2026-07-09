@@ -23,11 +23,14 @@ class IngestionSummary:
     """Counts of new rows written by one ingestion run.
 
     Zero counts on a re-run are expected and correct: ingestion is idempotent,
-    so unchanged seeds write nothing the second time.
+    so unchanged seeds write nothing the second time. policies_superseded
+    counts prior policy versions stamped as replaced, so a version roll is
+    visible in the run output rather than silent.
     """
 
     code_entries_written: int
     policies_written: int
+    policies_superseded: int
 
 
 def default_code_seed_path() -> Path:
@@ -67,10 +70,11 @@ def run_ingestion(
     code_entries_written = ingest_records(session, parsed_codes, retrieved_at)
 
     parsed_policies = parse_policy_seed_file(policy_seed_path)
-    policies_written = ingest_policies(session, parsed_policies, retrieved_at)
+    policy_result = ingest_policies(session, parsed_policies, retrieved_at)
 
     summary = IngestionSummary(
         code_entries_written=code_entries_written,
-        policies_written=policies_written,
+        policies_written=policy_result.written,
+        policies_superseded=policy_result.superseded,
     )
     return summary

@@ -132,13 +132,14 @@ class ValidationOutcome:
 def _latest_versions(policies: list[PayerPolicy]) -> list[PayerPolicy]:
     """Reduce to the newest ingested version of each policy identifier.
 
-    Versioning is append-only (section 4), so several versions of one
-    identifier can be in force on the same date. Only the newest is current,
-    and retrieval must consult it alone. In particular, service matching must
-    run against current keywords only: a superseded version whose service
-    keywords have since been narrowed must never match a request the current
-    version rejects. Deduplicating before service matching, not after, is what
-    makes that hold.
+    Retrieval already excludes superseded rows, and ingest guarantees one
+    current version per identifier, so post-ingest data never has duplicates
+    here. This is defense in depth for rows that did not come through the
+    ingester (hand-inserted data, or a database from before supersession
+    existed whose next ingest run has not happened yet): if several versions
+    of one identifier are current, only the newest may govern. In particular,
+    service matching must run against current keywords only, so this dedup
+    must happen before matching, not after.
     """
     latest_by_identifier: dict[str, PayerPolicy] = {}
     for policy in policies:

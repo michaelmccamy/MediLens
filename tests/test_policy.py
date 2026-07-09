@@ -337,12 +337,14 @@ def test_policy_hash_changes_when_effective_end_set() -> None:
 def test_ingest_writes_rows_with_structure(session: Session) -> None:
     policies = parse_policy_seed_file(SEED_PATH)
 
-    written = ingest_policies(session, policies, FIXED_RETRIEVED_AT)
+    result = ingest_policies(session, policies, FIXED_RETRIEVED_AT)
 
-    assert written == len(policies)
+    assert result.written == len(policies)
+    assert result.superseded == 0
     stored = session.query(PayerPolicy).all()
     for row in stored:
         assert row.structure_json != ""
+        assert row.superseded_at is None
         # The stored structure rehydrates to a valid v2 structure.
         structure_from_json(row.structure_json, row.policy_identifier)
 
@@ -353,21 +355,97 @@ def test_ingest_is_idempotent(session: Session) -> None:
     first = ingest_policies(session, policies, FIXED_RETRIEVED_AT)
     second = ingest_policies(session, policies, FIXED_RETRIEVED_AT)
 
-    assert first == len(policies)
-    assert second == 0
+    assert first.written == len(policies)
+    assert second.written == 0
+    assert second.superseded == 0
     assert session.query(PayerPolicy).count() == len(policies)
 
 
-def test_ingest_writes_new_version_when_structure_changes(session: Session) -> None:
+def test_ingest_supersedes_prior_version_when_structure_changes(
+    session: Session,
+) -> None:
     original = _make_policy(clause_text="Original clause.")
     ingest_policies(session, [original], FIXED_RETRIEVED_AT)
 
     revised = _make_policy(clause_text="Revised clause for 2026.")
-    written = ingest_policies(session, [revised], FIXED_RETRIEVED_AT)
+    later = FIXED_RETRIEVED_AT + datetime.timedelta(days=30)
+    result = ingest_policies(session, [revised], later)
 
-    # A changed policy is a new version; both coexist for audit history.
-    assert written == 1
-    assert session.query(PayerPolicy).count() == 2
+    # A changed policy is a new version. The old row is kept for audit but
+    # stamped superseded, so exactly one current version exists.
+    assert result.written == 1
+    assert result.superseded == 1
+    rows = session.query(PayerPolicy).order_by(PayerPolicy.id).all()
+    assert len(rows) == 2
+    assert rows[0].superseded_at == later
+    assert rows[1].superseded_at is None
+    assert "Revised clause" in rows[1].policy_text
+
+
+def test_upgrade_schema_adds_missing_policy_columns() -> None:
+    # Simulate a database bootstrapped before the additive columns existed:
+    # a payer_policy table missing service matching, structure, and
+    # supersession. upgrade_schema must add them so ORM inserts work.
+    from sqlalchemy import inspect, text
+
+    from medilens.db.session import upgrade_schema
+
+    engine = create_engine("sqlite://")
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "CREATE TABLE payer_policy ("
+                "id INTEGER PRIMARY KEY, "
+                "payer_name VARCHAR(128), "
+                "policy_identifier VARCHAR(128), "
+                "specialty VARCHAR(128), "
+                "policy_text TEXT, "
+                "effective_start DATE, "
+                "effective_end DATE, "
+                "source VARCHAR(256), "
+                "retrieved_at TIMESTAMP, "
+                "content_hash VARCHAR(64))"
+            )
+        )
+
+    upgrade_schema(engine)
+
+    inspector = inspect(engine)
+    column_names = set()
+    for column in inspector.get_columns("payer_policy"):
+        column_names.add(column["name"])
+    assert "service" in column_names
+    assert "service_keywords" in column_names
+    assert "structure_json" in column_names
+    assert "superseded_at" in column_names
+
+
+def test_ingest_cleans_up_legacy_duplicate_current_rows(session: Session) -> None:
+    # Databases from before supersession existed can hold several current
+    # versions of one identifier. Re-running ingest must keep the row matching
+    # the seed content and stamp the stale ones, without writing anything new.
+    policy = _make_policy(clause_text="Current clause.")
+    stale = _make_policy(clause_text="Stale clause.")
+    earlier = FIXED_RETRIEVED_AT - datetime.timedelta(days=60)
+    ingest_policies(session, [stale], earlier)
+    # Simulate the legacy state: both rows current at once.
+    ingest_policies(session, [policy], FIXED_RETRIEVED_AT)
+    for row in session.query(PayerPolicy).all():
+        row.superseded_at = None
+    session.commit()
+
+    later = FIXED_RETRIEVED_AT + datetime.timedelta(days=30)
+    result = ingest_policies(session, [policy], later)
+
+    assert result.written == 0
+    assert result.superseded == 1
+    current_rows = (
+        session.query(PayerPolicy)
+        .filter(PayerPolicy.superseded_at.is_(None))
+        .all()
+    )
+    assert len(current_rows) == 1
+    assert "Current clause" in current_rows[0].policy_text
 
 
 # --- date-resolved retrieval ---------------------------------------------
@@ -414,6 +492,32 @@ def test_find_policy_effective_end_boundary_is_inclusive(session: Session) -> No
 
     assert on_last_day is not None
     assert day_after is None
+
+
+def test_retrieval_returns_only_the_current_version(session: Session) -> None:
+    # Both versions are in force by their effective dates; only the current
+    # one may answer queries. A superseded version answering (or its stale
+    # service keywords matching) would resurrect replaced content.
+    original = _make_policy(clause_text="Original clause.")
+    ingest_policies(session, [original], FIXED_RETRIEVED_AT)
+    revised = _make_policy(clause_text="Revised clause for 2026.")
+    later = FIXED_RETRIEVED_AT + datetime.timedelta(days=30)
+    ingest_policies(session, [revised], later)
+
+    found = find_policy_at_date(
+        session, "Medicare", "SYN-LUMBAR-MRI-001", datetime.date(2026, 6, 1)
+    )
+    listed = list_policies_for_payer_at_date(
+        session,
+        "Medicare",
+        "Orthopedics and pain medicine",
+        datetime.date(2026, 6, 1),
+    )
+
+    assert found is not None
+    assert "Revised clause" in found.policy_text
+    assert len(listed) == 1
+    assert "Revised clause" in listed[0].policy_text
 
 
 def test_list_policies_filters_by_payer_and_specialty(session: Session) -> None:

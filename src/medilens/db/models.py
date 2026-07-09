@@ -42,6 +42,21 @@ class PayerPolicy(Base):
     never apply a policy to a service it does not govern. Both fields default
     to empty for rows ingested before service matching existed; such rows are
     excluded from service-matched retrieval.
+
+    Versioning has two independent axes, and conflating them corrupts
+    date-of-service resolution:
+
+    - effective_start / effective_end model the payer's real-world policy
+      window. They answer "was this policy in force on the date of service".
+    - superseded_at models our curation versions of the same policy record.
+      NULL means this row is the current version; a timestamp means a later
+      ingest replaced it (a correction or re-curation) and records when.
+
+    A curation fix applies retroactively to every date of service (the old row
+    was our transcription, not what the payer had in force), which is why
+    supersession must never be expressed through effective_end. Superseded
+    rows are kept forever for audit reconstruction; the supersession stamp is
+    the only field ever written after insert.
     """
 
     __tablename__ = "payer_policy"
@@ -62,6 +77,9 @@ class PayerPolicy(Base):
     source: Mapped[str] = mapped_column(String(256))
     retrieved_at: Mapped[datetime.datetime]
     content_hash: Mapped[str] = mapped_column(String(64))
+    # When a later ingest replaced this row (see the class docstring). NULL
+    # means current. Retrieval must only ever consult current rows.
+    superseded_at: Mapped[datetime.datetime | None] = mapped_column(default=None)
 
 
 class Recommendation(Base):

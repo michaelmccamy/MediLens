@@ -125,6 +125,7 @@ def run_ingest_command(settings: Settings, args: argparse.Namespace) -> None:
 
     print(f"code_entries_written: {summary.code_entries_written}")
     print(f"policies_written: {summary.policies_written}")
+    print(f"policies_superseded: {summary.policies_superseded}")
 
 
 def run_validate_command(settings: Settings, args: argparse.Namespace) -> None:

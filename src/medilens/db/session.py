@@ -67,6 +67,13 @@ def upgrade_schema(engine: Engine) -> None:
                 "ALTER TABLE payer_policy "
                 "ADD COLUMN structure_json TEXT NOT NULL DEFAULT ''"
             )
+        if "superseded_at" not in policy_columns:
+            # Nullable: NULL marks the current version of a policy record.
+            # Pre-existing rows all start as current; the next ingest run
+            # supersedes the stale ones (see ingest_policies).
+            statements.append(
+                "ALTER TABLE payer_policy ADD COLUMN superseded_at TIMESTAMP"
+            )
 
     if "recommendation" in table_names:
         recommendation_columns = set()

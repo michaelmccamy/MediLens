@@ -184,33 +184,76 @@ def parse_policy_seed_file(seed_path: Path) -> list[ParsedPolicy]:
     return parsed_policies
 
 
+@dataclass(frozen=True)
+class PolicyIngestResult:
+    """Counts from one policy ingest run.
+
+    written is the number of new version rows inserted. superseded is the
+    number of previously-current rows stamped as replaced, which makes version
+    rolls visible to the operator instead of silent.
+    """
+
+    written: int
+    superseded: int
+
+
 def ingest_policies(
     session: Session,
     parsed_policies: list[ParsedPolicy],
     retrieved_at: datetime.datetime,
-) -> int:
-    """Write parsed policies into the store, skipping unchanged ones.
+) -> PolicyIngestResult:
+    """Write parsed policies into the store, superseding replaced versions.
 
     retrieved_at is supplied by the caller (not read from the clock here) so
-    ingestion is deterministic and testable. A policy whose content hash
-    already exists is skipped, so re-running ingestion is idempotent and only
-    genuinely changed policies are re-written, preserving prior versions for
-    audit.
+    ingestion is deterministic and testable. For each parsed policy, the
+    current rows (superseded_at NULL) for its payer and identifier decide the
+    outcome:
 
-    Returns the number of new rows written.
+    - A current row with the same content hash means the policy is unchanged:
+      nothing is written, so re-running ingestion is idempotent. Any other
+      current rows for that identifier are stale duplicates (from before
+      supersession existed) and are stamped superseded.
+    - No matching current row means the content changed: a new row is written
+      and every previously-current row is stamped superseded.
+
+    Superseded rows are never deleted or content-modified; the stamp is
+    versioning metadata that keeps prior versions queryable for audit while
+    guaranteeing retrieval sees exactly one current version per identifier.
+    Retrieval consulting a stale version's service keywords was a live bug
+    (see test_superseded_version_keywords_do_not_match); superseding at ingest
+    removes the ambiguity at the source.
     """
     written_count = 0
+    superseded_count = 0
     for policy in parsed_policies:
         content_hash = compute_policy_hash(policy)
 
-        existing_query = select(PayerPolicy).where(
-            PayerPolicy.content_hash == content_hash
+        current_query = select(PayerPolicy).where(
+            (PayerPolicy.payer_name == policy.payer_name)
+            & (PayerPolicy.policy_identifier == policy.policy_identifier)
+            & (PayerPolicy.superseded_at.is_(None))
         )
-        existing_row = session.execute(existing_query).scalar_one_or_none()
-        if existing_row is not None:
+        current_rows = list(session.execute(current_query).scalars().all())
+
+        # Keep the newest current row whose content matches; everything else
+        # current for this identifier is being replaced.
+        kept_row: PayerPolicy | None = None
+        for row in current_rows:
+            if row.content_hash != content_hash:
+                continue
+            if kept_row is None or row.retrieved_at > kept_row.retrieved_at:
+                kept_row = row
+
+        for row in current_rows:
+            if row is kept_row:
+                continue
+            row.superseded_at = retrieved_at
+            superseded_count += 1
+
+        if kept_row is not None:
             continue
 
-        row = PayerPolicy(
+        new_row = PayerPolicy(
             payer_name=policy.payer_name,
             policy_identifier=policy.policy_identifier,
             specialty=policy.specialty,
@@ -224,8 +267,8 @@ def ingest_policies(
             retrieved_at=retrieved_at,
             content_hash=content_hash,
         )
-        session.add(row)
+        session.add(new_row)
         written_count += 1
 
     session.commit()
-    return written_count
+    return PolicyIngestResult(written=written_count, superseded=superseded_count)
